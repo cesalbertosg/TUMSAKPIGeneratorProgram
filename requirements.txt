@@ -1,0 +1,15 @@
+# Dependencias en runtime — espejo de pyproject.toml [project.dependencies]
+# Mantén ambos sincronizados. pyproject.toml es la fuente canónica;
+# este archivo existe solo para `pip install -r requirements.txt` en entornos legacy.
+
+pandas>=2.2
+numpy>=2.0
+openpyxl>=3.1
+gspread>=6.0
+google-auth>=2.30
+python-dotenv>=1.0
+
+# --- Opcional: extracción SAP (extras "sap") ---
+# pyautogui>=0.9.54
+# pillow>=10.0
+# pywin32>=306; sys_platform == 'win32'

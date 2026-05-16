@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kpi-generator"
+version = "0.1.0"
+description = "Generador de KPIs de flota TUMSA: procesa viajes, combustible y cédulas; sincroniza con Google Sheets."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+    { name = "César Alberto Solano Guzmán", email = "albertosolano@tumsa.com.mx" }
+]
+keywords = ["kpi", "tumsa", "flota", "transporte", "google-sheets"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "openpyxl>=3.1",
+    "gspread>=6.0",
+    "google-auth>=2.30",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+sap = [
+    "pyautogui>=0.9.54",
+    "pillow>=10.0",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+kpi-gui = "kpi_generator.__main__:main"
+kpi-run = "kpi_generator.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/tumsa/kpi-generator"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"kpi_generator" = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

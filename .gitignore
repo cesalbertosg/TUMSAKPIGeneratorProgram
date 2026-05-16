@@ -1,0 +1,64 @@
+# --- Secrets ---
+secrets/*
+!secrets/.gitkeep
+!secrets/README.md
+*.json
+!pyproject.json
+!.vscode/*.json
+!.claude/*.json
+.env
+.env.*
+!.env.example
+
+# --- Datos crudos y outputs ---
+data-input/
+Outputs/
+outputs/
+*.xlsx
+*.XLSX
+*.xls
+*.csv
+*.tsv
+*.pdf
+*.docx
+*.doc
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- IDEs ---
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Logs y temporales ---
+*.log
+*.tmp
+*.bak
+
+# --- Claude Code (configuración local del agente, no del proyecto) ---
+.claude/settings.local.json
+
+# --- Graphify ---
+graphify-out/
+
+# --- Outputs específicos ---
+KPIs_Transport_*.xlsx
