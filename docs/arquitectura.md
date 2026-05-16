@@ -45,11 +45,24 @@ El KPI Generator es un pipeline que consume cuatro fuentes Excel (viajes SAP, co
 6. **Cumplimiento** — `_calculate_compliance_optimized` cruza vs objetivos mensuales
 7. **Salida** — `save_results` genera Excel + push a Google Sheets
 
+## Capa I/O: Postgres Cédula DG (v0.2.0)
+
+A partir de v0.2.0 el sistema soporta cargar cédulas desde PostgreSQL como fuente alternativa:
+
+```
+src/kpi_generator/io/
+├── postgres.py     Cliente psycopg2 + context manager get_connection()
+├── date_range.py   Deriva [fecha_min, fecha_max] de zmov.XLSX (lee solo columna 'Fecha creación')
+└── cedulas_db.py   Query SQL + forward-fill + mapeo al contrato Excel
+```
+
+Control de fuente vía `Config.CEDULAS_SOURCE` ∈ {db, excel, sheets}. El default actual es `excel` para preservar compatibilidad durante la migración (Fase 1 del plan). Ver [`migracion-cedulas-db.md`](migracion-cedulas-db.md) para el detalle completo.
+
 ## Notas para iteraciones futuras
 
-- Los métodos `load_*` viven hoy dentro de `DataProcessor`. Idealmente se extraen a `kpi_generator.io.excel` y `kpi_generator.io.sheets` en una segunda pasada.
+- Los métodos `load_*` (especialmente carga de viajes y combustible) siguen dentro de `DataProcessor`. Migrar `process_trips_optimized` requeriría refactor profundo del pipeline.
 - La GUI mezcla layout, theming y orquestación. Separar `theme.py` cuando se quiera cambiar paleta.
-- Sin tests por ahora — la carpeta `tests/` está lista para crecer.
+- Tests de integración requieren VPN + credenciales; los unitarios siguen pendientes.
 
 ---
 

@@ -29,12 +29,13 @@ class KPIGeneratorGUI:
         
         self.paths = {
             "trips": tk.StringVar(),
-            "fuel": tk.StringVar(), 
+            "fuel": tk.StringVar(),
             "cedulas": tk.StringVar(),
             "objectives": tk.StringVar(),
             "output": tk.StringVar()
         }
-        
+        self.cedulas_source = tk.StringVar(value=Config.CEDULAS_SOURCE)
+
         self.processor = DataProcessor(self.log, LogLevel.INFO)
         self.setup_ui()
     
@@ -96,11 +97,13 @@ class KPIGeneratorGUI:
                                  font=('Segoe UI', 12))
         subtitle_label.pack(side="left", padx=(15, 0), pady=20)
         
-        files_card = self.create_card_frame(main_container, 
-                                          "Configuración de Fuentes de Datos", 
+        files_card = self.create_card_frame(main_container,
+                                          "Configuración de Fuentes de Datos",
                                           "Seleccione los archivos y carpetas requeridos")
         files_card.pack(fill="x", pady=(0, 15))
-        
+
+        self._create_cedulas_source_selector(files_card)
+
         file_configs = [
             ("Viajes", "trips", "🚚"),
             ("Combustible", "fuel", "⛽"),
@@ -108,7 +111,7 @@ class KPIGeneratorGUI:
             ("Objetivos", "objectives", "🎯"),
             ("Directorio Salida", "output", "💾")
         ]
-        
+
         for label, key, icon in file_configs:
             self.create_file_row(files_card, label, key, icon)
         
@@ -245,9 +248,38 @@ class KPIGeneratorGUI:
                        cursor='hand2',
                        activebackground=self.colors['accent_secondary'])
         btn.pack(fill="both", expand=True)
-        
+
         return row_frame
-    
+
+    def _create_cedulas_source_selector(self, parent):
+        """Dropdown que controla de dónde se cargan las cédulas: db | excel | sheets."""
+        row = tk.Frame(parent, bg=self.colors['bg_card'], pady=8)
+        row.pack(fill="x", pady=3)
+
+        label_frame = tk.Frame(row, bg=self.colors['bg_card'])
+        label_frame.pack(side="left", padx=(0, 15))
+
+        tk.Label(label_frame, text="🗄️", bg=self.colors['bg_card'],
+                 font=('Segoe UI', 12)).pack(side="left", padx=(0, 8))
+        tk.Label(label_frame, text="Fuente cédulas",
+                 bg=self.colors['bg_card'], fg=self.colors['text_primary'],
+                 font=('Segoe UI', 10), width=12, anchor="w").pack(side="left")
+
+        combo_frame = tk.Frame(row, bg=self.colors['bg_secondary'], height=35)
+        combo_frame.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        combo_frame.pack_propagate(False)
+
+        combo = ttk.Combobox(
+            combo_frame,
+            textvariable=self.cedulas_source,
+            values=["db", "excel", "sheets"],
+            state="readonly",
+            font=('Segoe UI', 10),
+        )
+        combo.pack(fill="both", padx=12, pady=6)
+
+        return row
+
     def setup_control_panel(self):
         """Configurar panel de control optimizado."""
         self.controls_frame = tk.Frame(self.root, bg=self.colors['bg_card'], pady=15)
@@ -418,19 +450,23 @@ class KPIGeneratorGUI:
     
     def validate_inputs(self) -> bool:
         """Validar configuración de entrada."""
-        required_fields = ['trips', 'fuel', 'cedulas', 'output']
-        
+        source = self.cedulas_source.get()
+        # 'cedulas' solo es requerido si la fuente es Excel local
+        required_fields = ['trips', 'fuel', 'output']
+        if source == 'excel':
+            required_fields.append('cedulas')
+
         for key in required_fields:
             if not self.paths[key].get().strip():
                 messagebox.showerror("Error de Validación", f"Debe seleccionar: {key.title()}")
                 return False
-        
+
         for key in ['trips', 'fuel']:
             if not Path(self.paths[key].get()).exists():
                 messagebox.showerror("Error de Archivo", f"El archivo {key} no existe")
                 return False
-        
-        if not Path(self.paths["cedulas"].get()).is_dir():
+
+        if source == 'excel' and not Path(self.paths["cedulas"].get()).is_dir():
             messagebox.showerror("Error de Carpeta", "La carpeta de cédulas no es válida")
             return False
         
@@ -466,7 +502,8 @@ class KPIGeneratorGUI:
                 self.paths["fuel"].get(),
                 self.paths["cedulas"].get(),
                 self.paths["output"].get(),
-                objectives_file
+                objectives_file,
+                cedulas_source=self.cedulas_source.get(),
             )
             
             self.root.after(0, self.processing_complete, result)

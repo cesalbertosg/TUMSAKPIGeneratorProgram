@@ -264,17 +264,21 @@ class DataProcessor:
 
     def load_data(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                   objectives_file: str = None, cedulas_sheet_id: str = None,
-                  cedulas_tab: str = None) -> Optional[Dict]:
-        """Cargar y validar archivos de entrada optimizado."""
+                  cedulas_tab: str = None, cedulas_source: str = None) -> Optional[Dict]:
+        """Cargar y validar archivos de entrada optimizado.
+
+        `cedulas_source` controla la fuente de cédulas: "db" | "excel" | "sheets".
+        Si es None, se usa Config.CEDULAS_SOURCE (default "excel").
+        """
         try:
             self.log("Cargando archivos", code="LOAD")
             data = {}
-            
+
             file_configs = [
                 ('trips', trips_file, Config.COLUMNS["trips"]),
                 ('fuel', fuel_file, Config.COLUMNS["fuel"])
             ]
-            
+
             for key, file_path, required_cols in file_configs:
                 df = pd.read_excel(file_path)
                 missing = [col for col in required_cols if col not in df.columns]
@@ -283,14 +287,15 @@ class DataProcessor:
                     return None
                 data[key] = df
                 self.log(f"{key}: {len(df)} registros", LogLevel.DEBUG, "OK")
-            
-            if cedulas_sheet_id:
-                df_cedulas = self.load_cedula_from_sheets(cedulas_sheet_id, cedulas_tab)
-            else:
-                df_cedulas = self.load_daily_cedulas(cedulas_folder)
+
+            source = (cedulas_source or Config.CEDULAS_SOURCE).lower()
+            df_cedulas, df_cedulas_audit = self._load_cedulas_by_source(
+                source, trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+            )
             if df_cedulas is None:
                 return None
             data['cedulas'] = df_cedulas
+            data['cedulas_audit'] = df_cedulas_audit  # vacío si source != "db"
             
             if objectives_file and Path(objectives_file).exists():
                 df_obj = pd.read_excel(objectives_file)
@@ -309,7 +314,52 @@ class DataProcessor:
         except Exception as e:
             self.log(f"Error carga archivos: {e}", LogLevel.ERROR, "ERR")
             return None
-    
+
+    def _load_cedulas_by_source(self, source: str, trips_file: str, cedulas_folder: str,
+                                cedulas_sheet_id: str | None, cedulas_tab: str | None
+                                ) -> tuple[Optional[pd.DataFrame], pd.DataFrame]:
+        """Despacha la carga de cédulas a la fuente apropiada.
+
+        Devuelve (df_cedulas, df_audit). df_audit está vacío salvo cuando source='db'.
+        Si source='db' falla y FALLBACK_ON_DB_ERROR=true, intenta el path Excel.
+        """
+        if source == "sheets":
+            self.log("Fuente cédulas: Google Sheets", code="SRC")
+            sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
+            df = self.load_cedula_from_sheets(sheet_id, cedulas_tab)
+            return df, pd.DataFrame()
+
+        if source == "db":
+            self.log("Fuente cédulas: PostgreSQL", code="SRC")
+            try:
+                from kpi_generator.io.cedulas_db import load_cedulas_from_db
+                from kpi_generator.io.date_range import derive_date_range
+                from kpi_generator.io.postgres import PostgresConnectionError
+
+                fecha_min, fecha_max = derive_date_range(trips_file)
+                self.log(f"Rango derivado de viajes: {fecha_min} → {fecha_max}", code="RNG")
+                df, df_audit = load_cedulas_from_db(fecha_min, fecha_max, log_func=self.log)
+                if df.empty:
+                    self.log("BD devolvió 0 cédulas para el rango", LogLevel.ERROR, "ERR")
+                    return None, pd.DataFrame()
+                return df, df_audit
+            except PostgresConnectionError as e:
+                if Config.FALLBACK_ON_DB_ERROR and cedulas_folder:
+                    self.log(f"BD inaccesible ({e}); fallback a Excel: {cedulas_folder}",
+                             LogLevel.ERROR, "WARN")
+                    df = self.load_daily_cedulas(cedulas_folder)
+                    return df, pd.DataFrame()
+                self.log(f"BD inaccesible y sin fallback: {e}", LogLevel.ERROR, "ERR")
+                return None, pd.DataFrame()
+            except Exception as e:
+                self.log(f"Error cargando cédulas desde BD: {e}", LogLevel.ERROR, "ERR")
+                return None, pd.DataFrame()
+
+        # source == "excel" (default)
+        self.log("Fuente cédulas: Excel local", code="SRC")
+        df = self.load_daily_cedulas(cedulas_folder)
+        return df, pd.DataFrame()
+
     @lru_cache(maxsize=256)
     def _get_operacion_cedula(self, operacion: str, circuito: str, tipo_unidad: str) -> str:
         """Generar cédula de operación según reglas de negocio (cached)."""
@@ -1549,7 +1599,8 @@ class DataProcessor:
 
     def save_results(self, df_kpi: pd.DataFrame, df_processed: pd.DataFrame, df_changes: pd.DataFrame,
                      df_opcedula: pd.DataFrame, output_path: str, df_objectives: pd.DataFrame = None,
-                     df_promedio: pd.DataFrame = None, upload_sheets: bool = True) -> Optional[str]:
+                     df_promedio: pd.DataFrame = None, df_cedulas_audit: pd.DataFrame = None,
+                     upload_sheets: bool = True) -> Optional[str]:
         """Generar archivo Excel + subida automática a Google Sheets."""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1582,6 +1633,13 @@ class DataProcessor:
                 if df_promedio is not None and not df_promedio.empty:
                     df_promedio.to_excel(writer, sheet_name='PromedioKMunitOps', index=False)
 
+                # Auditoría de forward-fill (solo cuando source='db')
+                if df_cedulas_audit is not None and not df_cedulas_audit.empty:
+                    df_cedulas_audit.to_excel(writer, sheet_name='Cedulas Rellenadas', index=False)
+                    rellenadas = (df_cedulas_audit['Origen'] == 'forward_fill').sum()
+                    self.log(f"Hoja Cedulas Rellenadas: {rellenadas} días por forward-fill "
+                             f"de {len(df_cedulas_audit)} totales", code="AUDIT")
+
                 self._format_excel_columns(writer)
 
             self.log(f"Archivo: {filename}", code="SAVE")
@@ -1602,7 +1660,7 @@ class DataProcessor:
         """Formatear columnas de Excel de manera eficiente."""
         try:
             for sheet_name in ['KPIs per Equipment', 'Trip Data', 'Resumen de Cambios', 'KPIs OpCedula',
-                                'Objetivos', 'PromedioKMunitOps']:
+                                'Objetivos', 'PromedioKMunitOps', 'Cedulas Rellenadas']:
                 if sheet_name in writer.sheets:
                     worksheet = writer.sheets[sheet_name]
                     for column in worksheet.columns:
@@ -1620,12 +1678,18 @@ class DataProcessor:
             return 0.0
         return (km_actual / days_elapsed) * remaining_days
 
-    def generate_report(self, trips_file: str, fuel_file: str, cedulas_folder: str, output_path: str, objectives_file: str = None) -> Optional[str]:
-        """Ejecutar proceso completo optimizado con comodatos, cambios y OpCedula."""
+    def generate_report(self, trips_file: str, fuel_file: str, cedulas_folder: str,
+                        output_path: str, objectives_file: str = None,
+                        cedulas_source: str = None) -> Optional[str]:
+        """Ejecutar proceso completo optimizado con comodatos, cambios y OpCedula.
+
+        `cedulas_source`: "db" | "excel" | "sheets" | None (usa Config.CEDULAS_SOURCE).
+        """
         try:
             self.log("=== INICIO PROCESO KPI ===", code="START")
-            
-            data = self.load_data(trips_file, fuel_file, cedulas_folder, objectives_file)
+
+            data = self.load_data(trips_file, fuel_file, cedulas_folder, objectives_file,
+                                  cedulas_source=cedulas_source)
             if not data:
                 return None
             
@@ -1666,6 +1730,7 @@ class DataProcessor:
                 df_final, df_processed, df_changes, df_opcedula, output_path,
                 df_objectives=data['objectives'],
                 df_promedio=df_promedio,
+                df_cedulas_audit=data.get('cedulas_audit'),
                 upload_sheets=True
             )
 

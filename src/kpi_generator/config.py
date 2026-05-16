@@ -62,6 +62,23 @@ class Config:
     DATA_INPUT_DIR = _project_root() / os.getenv("DATA_INPUT_DIR", "data-input")
     OUTPUTS_DIR = _project_root() / os.getenv("OUTPUTS_DIR", "Outputs")
 
+    # --- Fuente de cédulas: "db" | "excel" | "sheets" ---
+    # Default "excel" durante migración. Se cambiará a "db" tras validación de Fase 2.
+    CEDULAS_SOURCE = os.getenv("CEDULAS_SOURCE", "excel").lower()
+
+    # Si CEDULAS_SOURCE=db falla y FALLBACK_ON_DB_ERROR=true, usa FALLBACK_CEDULAS_PATH.
+    FALLBACK_ON_DB_ERROR = os.getenv("FALLBACK_ON_DB_ERROR", "false").lower() == "true"
+    FALLBACK_CEDULAS_PATH = _project_root() / os.getenv("FALLBACK_CEDULAS_PATH", "data-input/Cedulas")
+
+    # --- Conexión PostgreSQL Cédula DG ---
+    PG_CEDULA_HOST = os.getenv("PG_CEDULA_HOST", "172.17.1.4")
+    PG_CEDULA_PORT = int(os.getenv("PG_CEDULA_PORT", "5432"))
+    PG_CEDULA_DB = os.getenv("PG_CEDULA_DB", "cedula_direccion")
+    PG_CEDULA_USER = os.getenv("PG_CEDULA_USER", "")
+    PG_CEDULA_PASSWORD = os.getenv("PG_CEDULA_PASSWORD", "")
+    PG_CEDULA_SCHEMA = os.getenv("PG_CEDULA_SCHEMA", "public")
+    PG_CEDULA_TABLE = os.getenv("PG_CEDULA_TABLE", "cedula_unidades")
+
     OUTPUT_COLUMNS = [
         'Fecha Ultima modif', 'Denominación del equipo', 'Tipo de equipo', 'Operación cedula',
         'Unidades', 'Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito', 'Estatus',
