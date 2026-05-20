@@ -35,6 +35,10 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
             "PG_CEDULA_PASSWORD en .env"
         )
 
+    # statement_timeout corta queries colgadas (default 60s). Se aplica a NIVEL
+    # de sesión vía `options` — psycopg2 no expone parámetro nativo para esto.
+    statement_timeout_ms = int(os.getenv("PG_STATEMENT_TIMEOUT_MS", "60000"))
+
     conn = None
     try:
         conn = psycopg2.connect(
@@ -44,6 +48,7 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
             user=Config.PG_CEDULA_USER,
             password=Config.PG_CEDULA_PASSWORD,
             connect_timeout=int(os.getenv("PG_CONNECT_TIMEOUT", "10")),
+            options=f"-c statement_timeout={statement_timeout_ms}",
         )
     except psycopg2.OperationalError as e:
         raise PostgresConnectionError(

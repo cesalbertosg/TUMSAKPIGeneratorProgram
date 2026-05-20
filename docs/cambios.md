@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.2.1 — 2026-05-20 (Hardening pre-Fase 2)
+
+Endurece la implementación de v0.2.0 antes de la validación con VPN. Sin cambios funcionales para el usuario; mejora seguridad, performance y testabilidad.
+
+### Cambiado
+
+- **Query SQL usa `psycopg2.sql.Identifier`** para schema/table — elimina riesgo latente de SQL injection si `Config.PG_CEDULA_SCHEMA/TABLE` fueran manipulados
+- **`build_daily_snapshot` vectorizado** — reemplaza doble loop Python (`O(N×M)`) por `MultiIndex.from_product` + `reindex` + `groupby.ffill`. En el rango típico de mes (580 unidades × 30 días) reduce ~17k iteraciones a operaciones nativas de pandas
+- **`postgres.get_connection` configura `statement_timeout`** (default 60s vía `PG_STATEMENT_TIMEOUT_MS`) — corta queries colgadas en vez de bloquear el proceso indefinidamente
+- **`build_daily_snapshot` renombrada sin guion bajo** (de `_build_daily_snapshot`) — ahora es API pública para que los tests unitarios la ejerciten sin pasar por la BD
+
+### Nuevo
+
+- **`tests/unit/test_cedulas_db_snapshot.py`** con 5 casos sintéticos (sin VPN):
+  1. Día sin revisión en medio del rango → forward-fill correcto
+  2. Unidad que aparece a mitad del rango → no genera filas antes (ingreso)
+  3. Múltiples revisiones mismo día → drop_duplicates keep='last'
+  4. Solo semilla previa → forward-fill cubre todo el rango
+  5. DataFrame vacío → shape correcto sin romper downstream
+
+### Bug fix encontrado durante hardening
+
+- El test #4 detectó que la implementación anterior (también la actual antes de este commit) perdía las semillas `'previa'` al hacer `reindex` con un índice que no incluía sus fechas. **Si la BD tuviera cobertura parcial del rango, los días iniciales hubieran quedado vacíos en producción.** Corregido extendiendo el índice de reindex con las fechas de semillas previas, luego recortando al rango pedido tras el ffill.
+
+### Verificado
+
+- ✅ 5/5 tests unitarios pasan
+- ✅ Pipeline E2E con `--cedulas-source excel` sin regresión
+
 ## 0.2.0 — 2026-05-16 (Fase 1 de migración a Postgres)
 
 Soporte para cargar cédulas desde la BD PostgreSQL `172.17.1.4 / cedula_direccion` del proyecto Cédula DG, manteniendo Excel y Sheets como fuentes alternativas configurables.
