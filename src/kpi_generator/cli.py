@@ -106,7 +106,7 @@ def _cmd_diff_cedulas(args) -> int:
     from kpi_generator.domain.processor import DataProcessor
     from kpi_generator.io.cedulas_db import load_cedulas_from_db
 
-    print(f"[DIFF] Rango: {args.fecha_min} → {args.fecha_max}")
+    print(f"[DIFF] Rango: {args.fecha_min} a {args.fecha_max}")
     print(f"[DIFF] Excel folder: {args.excel_folder}")
 
     # Carga desde BD

@@ -337,7 +337,7 @@ class DataProcessor:
                 from kpi_generator.io.postgres import PostgresConnectionError
 
                 fecha_min, fecha_max = derive_date_range(trips_file)
-                self.log(f"Rango derivado de viajes: {fecha_min} → {fecha_max}", code="RNG")
+                self.log(f"Rango derivado de viajes: {fecha_min} a {fecha_max}", code="RNG")
                 df, df_audit = load_cedulas_from_db(fecha_min, fecha_max, log_func=self.log)
                 if df.empty:
                     self.log("BD devolvió 0 cédulas para el rango", LogLevel.ERROR, "ERR")

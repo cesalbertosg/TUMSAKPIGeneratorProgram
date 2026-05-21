@@ -47,18 +47,34 @@ _ORIGEN_COL = "origen"
 def _build_query(schema: str, table: str) -> sql.Composed:
     """Compone el query con identificadores seguros (psycopg2.sql.Identifier).
 
+    El CTE `unidades_activas` define el universo de unidades: solo las que
+    aparecen al menos una vez dentro del rango. La `ultima_previa` se restringe
+    a ese universo para evitar arrastrar unidades históricas que ya no operan
+    (en producción había 2,010 unidades fantasma de años anteriores).
+
     Evita SQL injection si Config.PG_CEDULA_SCHEMA/TABLE fueran manipulados.
     """
     return sql.SQL("""
-WITH ultima_previa AS (
-  SELECT DISTINCT ON (unidades)
-    unidades, gerencia, operacion, tipo_unidad, circuito,
-    estatus_2,
-    fecha::date AS fecha_dia,
-    'previa'    AS origen
+WITH unidades_activas AS (
+  -- Universo de unidades: solo las que aparecen al menos una vez en el rango.
+  -- Filtra centinelas (cadenas vacías, '0', '-') y unidades degeneradas que la
+  -- BD acumula por entradas malformadas históricas.
+  SELECT DISTINCT unidades
   FROM {schema}.{table}
-  WHERE fecha::date < %(fecha_min)s
-  ORDER BY unidades, fecha::timestamp DESC
+  WHERE fecha::date BETWEEN %(fecha_min)s AND %(fecha_max)s
+    AND unidades IS NOT NULL
+    AND TRIM(unidades) NOT IN ('', '0', '-')
+),
+ultima_previa AS (
+  SELECT DISTINCT ON (u.unidades)
+    u.unidades, u.gerencia, u.operacion, u.tipo_unidad, u.circuito,
+    u.estatus_2,
+    u.fecha::date AS fecha_dia,
+    'previa'      AS origen
+  FROM {schema}.{table} u
+  INNER JOIN unidades_activas a ON a.unidades = u.unidades
+  WHERE u.fecha::date < %(fecha_min)s
+  ORDER BY u.unidades, u.fecha::timestamp DESC
 ),
 dentro_rango AS (
   SELECT DISTINCT ON (unidades, fecha::date)

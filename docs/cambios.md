@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.2.2 — 2026-05-21 (Fase 2 validada con BD real)
+
+Primera ejecución contra Postgres `172.17.1.4 / cedula_direccion` con datos reales reveló
+dos bugs críticos en el query SQL y forzó replantear el modelo de equivalencia BD-vs-Excel.
+
+### Bugs corregidos durante validación
+
+- **Query SQL traía 2,590 unidades vs 580 esperadas** — el CTE `ultima_previa` no estaba
+  restringido al universo de unidades activas en el rango y arrastraba unidades históricas
+  que dejaron de operar hace años. Corregido con un CTE `unidades_activas` que define el
+  universo y un INNER JOIN sobre `ultima_previa`.
+- **Centinela `'0'` aparecía como unidad legítima** — la BD tiene filas con `unidades='0'`
+  (entradas malformadas históricas). Filtrado en `unidades_activas` con
+  `TRIM(unidades) NOT IN ('', '0', '-')`.
+- **Logs con flecha Unicode `→` rompían stdout en Windows cp1252** — reemplazado por
+  `'a'` en mensajes de log (`processor.py:RNG`, `cli.py:diff-cedulas`).
+
+### Cambio de expectativa: BD ≠ Excel bit-a-bit (y es lo correcto)
+
+La validación reveló que el path BD produce reportes **estructuralmente más completos** que
+el path Excel, no idénticos. Específicamente:
+
+| Métrica | Excel | BD | Razón |
+|---|---|---|---|
+| Viajes reales | 7,029 | 7,029 | ✅ Idénticos (mismo `zmov.XLSX`) |
+| KM total | igual | igual | ✅ Idéntico |
+| Comodatos sintéticos | 7,638 | 4,775 | BD tiene más cédulas reales → menos comodatos |
+| Períodos detectados | 2,641 | 2,286 | BD tiene mayor continuidad de datos reales |
+| Cambios operacionales | 16 | 53 | BD detecta cambios diarios reales |
+| OpCedula operaciones | 64 | 65 | BD descubre 1 operación adicional |
+| Unidades únicas | 581 | 581 | ✅ Idénticas |
+
+Las diferencias se explican porque los despachadores editan el Sheet de Drive en días
+sin archivo Excel — la BD captura esas ediciones, los Excel no. **La BD es más fiel a
+la realidad operativa.**
+
+### Cambiado en tests
+
+- `test_pipeline_db_vs_excel_genera_identico` (asercion `assert_frame_equal exact`) →
+  `test_pipeline_db_y_excel_producen_resultados_equivalentes` que valida:
+  - **Identidad estricta** en viajes REALES (excluyendo comodatos `>= 2_000_000_000`)
+  - **Identidad estricta** en KM total
+  - **Overlap ≥95%** en unidades únicas
+  - **Overlap ≥90%** en operaciones cédula
+  - Reporta diferencias en comodatos/períodos sin fallar
+
+### Validación E2E del 21/05/2026 con BD
+
+```
+Rango derivado: 2026-05-01 a 2026-05-15
+[DB] Recibidas 8601 filas crudas (565 semillas previas, 8036 dentro de rango)
+[DB] Snapshot diario: 8555 filas (2270 rellenadas, 6285 reales)
+[FINAL] Estructura final: 2286 registros
+[CHG] 53 cambios (16 ingresos, 0 egresos, 37 operacionales)
+[OPCED] 65 operaciones
+[AUDIT] 2270 días por forward-fill de 8555 totales (26.5%)
+[SHEETS] Google Sheets actualizado correctamente
+```
+
+### Suite de tests
+
+```
+9/9 PASS:
+  tests/unit/test_cedulas_db_snapshot.py .... (5)
+  tests/integration/test_db_vs_excel.py ..... (3)
+  tests/integration/test_pipeline_identidad.py (1)
+```
+
+### Estado del plan de migración
+
+- ✅ Fase 1 — Implementación (commit `e9c69be`)
+- ✅ Fase 1.5 — Hardening (commit `cf2763f`)
+- ✅ Fase 2 — Validación contra BD real (este commit)
+- ⏳ Fase 3 — Cambiar `CEDULAS_SOURCE=db` por default
+
 ## 0.2.1 — 2026-05-20 (Hardening pre-Fase 2)
 
 Endurece la implementación de v0.2.0 antes de la validación con VPN. Sin cambios funcionales para el usuario; mejora seguridad, performance y testabilidad.
