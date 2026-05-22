@@ -63,8 +63,9 @@ class Config:
     OUTPUTS_DIR = _project_root() / os.getenv("OUTPUTS_DIR", "Outputs")
 
     # --- Fuente de cédulas: "db" | "excel" | "sheets" ---
-    # Default "excel" durante migración. Se cambiará a "db" tras validación de Fase 2.
-    CEDULAS_SOURCE = os.getenv("CEDULAS_SOURCE", "excel").lower()
+    # Default "db" desde v0.3.0 (Fase 3 — 22/05/2026). La fuente Excel y Sheets
+    # se conservan como fallback configurable para casos de VPN caída o validación.
+    CEDULAS_SOURCE = os.getenv("CEDULAS_SOURCE", "db").lower()
 
     # Si CEDULAS_SOURCE=db falla y FALLBACK_ON_DB_ERROR=true, usa FALLBACK_CEDULAS_PATH.
     FALLBACK_ON_DB_ERROR = os.getenv("FALLBACK_ON_DB_ERROR", "false").lower() == "true"

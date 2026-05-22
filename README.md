@@ -43,10 +43,25 @@ python -m kpi_generator
 ### CLI (para scheduler / automatización)
 
 ```powershell
-python -m kpi_generator.cli run --mes abril --anio 2026
-# o
-.\scripts\run_cli.bat
+# Default desde v0.3.0: lee cédulas desde PostgreSQL automáticamente
+python -m kpi_generator.cli run --trips zmov.XLSX --fuel zmva.XLSX --objectives "Objetivo.xlsx" --output Outputs
+
+# Fallback manual a Excel si la BD está caída
+python -m kpi_generator.cli run --cedulas-source excel --cedulas <carpeta> ...
 ```
+
+## Fuente de cédulas
+
+A partir de v0.3.0 las cédulas se cargan desde PostgreSQL (`172.17.1.4 / cedula_direccion`)
+por default. El rango se deriva automáticamente del archivo de viajes (`zmov.XLSX`).
+
+Configurable vía `CEDULAS_SOURCE` en `.env`:
+- `db` (default) — PostgreSQL
+- `excel` — carpeta local de archivos `Cedula DDMMYYYY.xlsx`
+- `sheets` — Google Sheets directo (legacy)
+
+Si la BD cae, activar `FALLBACK_ON_DB_ERROR=true` para que use Excel automáticamente,
+o forzar `--cedulas-source excel` en la línea de comandos. Ver `docs/migracion-cedulas-db.md`.
 
 ### Extracción SAP (independiente)
 

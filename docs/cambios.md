@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.0 — 2026-05-22 (Fase 3 — promoción de BD a fuente default)
+
+PostgreSQL es ahora la fuente canónica de cédulas. Excel y Sheets se conservan
+como fuentes alternativas configurables.
+
+### Cambiado
+
+- `Config.CEDULAS_SOURCE` default: `"excel"` → `"db"`
+- `.env.example`: documenta `CEDULAS_SOURCE=db` como recomendación
+
+### Comportamiento
+
+- **Default (sin `--cedulas-source` ni env var)**: lee de Postgres
+- **Override por env**: `CEDULAS_SOURCE=excel` o `CEDULAS_SOURCE=sheets` en `.env`
+- **Override por flag**: `--cedulas-source {db,excel,sheets}` (gana sobre env)
+- **Fallback automático**: si `FALLBACK_ON_DB_ERROR=true` y la BD cae, usa Excel sin abortar
+- **Fallback manual**: el operador puede forzar Excel con `--cedulas-source excel` ante VPN caída
+- **GUI**: el dropdown ahora arranca preseleccionado en `db`
+
+### Validación E2E (22/05/2026)
+
+```
+# Sin flag, sin env override — usa el nuevo default 'db' del Config
+kpi-run run --trips zmov.XLSX --fuel zmva.XLSX --objectives "Objetivo.xlsx" --output Outputs
+
+[SRC] Fuente cédulas: PostgreSQL          ← lee del default
+[RNG] Rango derivado de viajes: 2026-05-01 a 2026-05-15
+[DB] Snapshot diario: 8555 filas (2270 rellenadas, 6285 reales)
+[CHG] 53 cambios (16 ingresos, 0 egresos, 37 operacionales)
+[OK] Reporte generado: KPIs_Transport_20260522_105607.xlsx
+```
+
+Path Excel sigue funcionando con `--cedulas-source excel` explícito (también validado).
+
+### Migración completa
+
+- ✅ Fase 1 (commit `e9c69be`) — Implementación inicial
+- ✅ Fase 1.5 (commit `cf2763f`) — Hardening de seguridad y performance
+- ✅ Fase 2 (commit `2719f5a`) — Corrección de query y validación contra BD real
+- ✅ Fase 3 (este commit) — Promoción de BD a default
+
 ## 0.2.2 — 2026-05-21 (Fase 2 validada con BD real)
 
 Primera ejecución contra Postgres `172.17.1.4 / cedula_direccion` con datos reales reveló

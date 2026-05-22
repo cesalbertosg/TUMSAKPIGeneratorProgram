@@ -121,10 +121,15 @@ La hoja extra `Cedulas Rellenadas` del Excel final documenta cada par (unidad, d
   - 1 operación cédula extra detectada
 - ✅ Hoja `Cedulas Rellenadas` audita correctamente: 73.5% reales / 26.5% forward-fill
 
-### Fase 3 — Switch + cleanup
-- Cambiar `CEDULAS_SOURCE=db` por default en `.env`
-- Conservar `load_daily_cedulas` y `load_cedula_from_sheets` como fallback
-- Documentar v0.2.0 en `docs/cambios.md`
+### Fase 3 — Switch + cleanup (COMPLETADA 22/05/2026, v0.3.0)
+- ✅ `Config.CEDULAS_SOURCE` default `"db"` en código
+- ✅ `.env.example` documenta `CEDULAS_SOURCE=db`
+- ✅ `load_daily_cedulas` y `load_cedula_from_sheets` conservados como fallback
+- ✅ GUI dropdown preseleccionado en `db`
+- ✅ E2E validado sin `--cedulas-source` ni env override
+
+**Migración completa.** A partir de v0.3.0, ejecutar `kpi-run run ...` sin flags
+consulta PostgreSQL automáticamente. Excel queda como red de seguridad operativa.
 
 ## Configuración (`.env`)
 
