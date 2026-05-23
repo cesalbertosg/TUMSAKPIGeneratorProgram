@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.4.1 — 2026-05-23 (Auditoría de salud)
+
+Nuevo subsistema de auditoría: smoke tests (~3s) y validación E2E (~3-5min) con
+exit code semaforizado (0=SANO, 1=DEGRADADO, 2=CRÍTICO) para schedulers.
+
+### Nuevo
+
+- **`src/kpi_generator/audit.py`** — módulo con clase `AuditReport` y 14 checks:
+  - **quick** (sin BD ni archivos): version, imports, config, credentials, conectividad Postgres, conectividad Sheets
+  - **full** (E2E): + pipeline run, estructura del output, deadweight ausente, naming canónico, consistencia del Resumen (suma gerencias = TOTAL), data sanity (rangos esperados), forward-fill %
+- **CLI**: subcomando `kpi-run audit [--quick|--full] [--trips … --fuel … --objectives …]` con output coloreado (override `--no-color`)
+- **Tests** `tests/integration/test_audit.py` — 7 casos:
+  - 5 unit-like sobre quick mode (sin VPN)
+  - 2 integration sobre full mode (requieren VPN + archivos)
+
+### Cambiado
+
+- Tests actualizados a los nombres de hoja canónicos v0.4.0 (`Viajes`, `Por Equipo`, `Por Operación`)
+
+### Verdicto del audit en este commit
+
+```
+$ kpi-run audit --full --trips zmov.XLSX --fuel zmva.XLSX --objectives Obj.xlsx
+  15/15 PASS · SANO · exit 0
+```
+
+Suite completa: **16/16 pytest verde**.
+
+### Uso
+
+```powershell
+# Auditoría rápida (puede correr todo el tiempo)
+kpi-run audit --quick
+
+# Auditoría completa (semanal o pre-deploy)
+kpi-run audit --full --trips ...\zmov.XLSX --fuel ...\zmva.XLSX --objectives ...\Obj.xlsx
+
+# Como canary en Task Scheduler: exit code != 0 dispara alerta
+```
+
 ## 0.4.0 — 2026-05-23 (Reestructura de output para Looker)
 
 Refactor del reporte Excel y de los tabs en Google Sheets, motivado por análisis de

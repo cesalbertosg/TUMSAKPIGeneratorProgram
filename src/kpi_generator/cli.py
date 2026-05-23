@@ -62,6 +62,24 @@ def _build_parser() -> argparse.ArgumentParser:
     diff.add_argument("--excel-folder", required=True, type=Path,
                       help="Carpeta con cédulas Excel para comparar contra la BD.")
 
+    audit = sub.add_parser("audit",
+                           help="Auditoría de salud: smoke tests (--quick) o pipeline E2E (--full).")
+    mode = audit.add_mutually_exclusive_group()
+    mode.add_argument("--quick", action="store_true",
+                      help="Solo smoke tests (sin BD ni archivos). Default. ~3s.")
+    mode.add_argument("--full", action="store_true",
+                      help="Pipeline E2E completo contra datos reales. Requiere --trips/--fuel. ~3-5min.")
+    audit.add_argument("--trips", type=Path, default=None,
+                       help="Archivo zmov.XLSX para modo --full.")
+    audit.add_argument("--fuel", type=Path, default=None,
+                       help="Archivo zmva.XLSX para modo --full.")
+    audit.add_argument("--objectives", type=Path, default=None,
+                       help="Archivo Objetivo de KM <mes>.xlsx para modo --full.")
+    audit.add_argument("--output", type=Path, default=None,
+                       help="Carpeta destino del Excel de auditoría. Default: Outputs/.")
+    audit.add_argument("--no-color", action="store_true",
+                       help="Desactivar colores ANSI en el reporte.")
+
     return parser
 
 
@@ -184,6 +202,28 @@ def _cmd_diff_cedulas(args) -> int:
     return 0 if not solo_db and not solo_excel and all(n == 0 for n in diffs_por_col.values()) else 2
 
 
+def _cmd_audit(args) -> int:
+    """Ejecuta auditoría de salud y renderiza reporte."""
+    from kpi_generator import audit as audit_mod
+
+    full = bool(args.full)
+    report = audit_mod.AuditReport()
+
+    if full:
+        if not args.trips or not args.fuel:
+            print("[ERR] --full requiere --trips y --fuel.", file=sys.stderr)
+            return 2
+        output_dir = args.output or _default_output_dir()
+        objectives = args.objectives or Path("/nonexistent")
+        audit_mod.run_full(args.trips, args.fuel, objectives, output_dir, report=report)
+    else:
+        audit_mod.run_quick(report)
+
+    use_color = (not args.no_color) and audit_mod.supports_color()
+    print(audit_mod.render(report, use_color=use_color))
+    return report.exit_code()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -192,6 +232,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "diff-cedulas":
         return _cmd_diff_cedulas(args)
+    if args.command == "audit":
+        return _cmd_audit(args)
 
     parser.print_help()
     return 2

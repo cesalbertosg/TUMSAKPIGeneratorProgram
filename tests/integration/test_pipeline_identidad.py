@@ -74,8 +74,8 @@ def test_pipeline_db_y_excel_producen_resultados_equivalentes(tmp_path):
     # Trip Data: separar viajes reales de comodatos sintéticos
     #   - Comodatos: 'Número de Viaje' >= 2_000_000_000 (constante base_id de ComodatoManager)
     #   - Reales: < 2_000_000_000 (vienen del zmov.XLSX, idénticos entre fuentes)
-    df_trips_excel = pd.read_excel(r_excel, sheet_name="Trip Data")
-    df_trips_db = pd.read_excel(r_db, sheet_name="Trip Data")
+    df_trips_excel = pd.read_excel(r_excel, sheet_name="Viajes")
+    df_trips_db = pd.read_excel(r_db, sheet_name="Viajes")
 
     COMODATO_BASE = 2_000_000_000
     reales_excel = df_trips_excel[df_trips_excel['Número de Viaje'] < COMODATO_BASE]
@@ -107,8 +107,8 @@ def test_pipeline_db_y_excel_producen_resultados_equivalentes(tmp_path):
 
     # KPIs OpCedula: el número de OPERACIONES (no de unidades-periodo) debe coincidir
     # porque depende del catálogo de operaciones, que es el mismo
-    df_op_excel = pd.read_excel(r_excel, sheet_name="KPIs OpCedula")
-    df_op_db = pd.read_excel(r_db, sheet_name="KPIs OpCedula")
+    df_op_excel = pd.read_excel(r_excel, sheet_name="Por Operación")
+    df_op_db = pd.read_excel(r_db, sheet_name="Por Operación")
     ops_excel = set(df_op_excel['Operación Cedula'])
     ops_db = set(df_op_db['Operación Cedula'])
     overlap = len(ops_excel & ops_db) / max(len(ops_excel), len(ops_db))
@@ -118,8 +118,8 @@ def test_pipeline_db_y_excel_producen_resultados_equivalentes(tmp_path):
     )
 
     # KPIs per Equipment: BD tiene MENOS períodos por mayor cobertura
-    df_kpi_excel = pd.read_excel(r_excel, sheet_name="KPIs per Equipment")
-    df_kpi_db = pd.read_excel(r_db, sheet_name="KPIs per Equipment")
+    df_kpi_excel = pd.read_excel(r_excel, sheet_name="Por Equipo")
+    df_kpi_db = pd.read_excel(r_db, sheet_name="Por Equipo")
     units_excel = set(df_kpi_excel['Unidades'].astype(str))
     units_db = set(df_kpi_db['Unidades'].astype(str))
     units_overlap = len(units_excel & units_db) / max(len(units_excel), len(units_db))

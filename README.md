@@ -69,6 +69,18 @@ o forzar `--cedulas-source excel` en la línea de comandos. Ver `docs/migracion-
 python -m kpi_generator.io.sap
 ```
 
+### Auditoría de salud
+
+```powershell
+# Smoke tests (~3s) — usa esto frecuentemente
+kpi-run audit --quick
+
+# Validación E2E completa (~3-5 min) — pre-deploy o canary semanal
+kpi-run audit --full --trips zmov.XLSX --fuel zmva.XLSX --objectives "Objetivo de KM Mayo.xlsx"
+```
+
+Exit codes: **0=SANO**, **1=DEGRADADO** (al menos un warning), **2=CRÍTICO** (al menos un fail). Listo para schedulers/alertas.
+
 ## Estructura
 
 ```
