@@ -12,9 +12,9 @@ Procesa viajes (SAP ZVPF), combustible, cédulas diarias de operación y objetiv
 ## Instalación
 
 ```powershell
-# 1. Clonar (cuando esté en GitHub)
-git clone https://github.com/tumsa/kpi-generator.git
-cd kpi-generator
+# 1. Clonar
+git clone https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram.git
+cd TUMSAKPIGeneratorProgram
 
 # 2. Crear venv e instalar en modo editable
 python -m venv .venv

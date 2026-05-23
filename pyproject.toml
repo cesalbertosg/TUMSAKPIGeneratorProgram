@@ -47,7 +47,9 @@ kpi-gui = "kpi_generator.__main__:main"
 kpi-run = "kpi_generator.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/tumsa/kpi-generator"
+Homepage = "https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram"
+Repository = "https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram.git"
+Issues = "https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
