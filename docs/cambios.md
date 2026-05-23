@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.4.0 — 2026-05-23 (Reestructura de output para Looker)
+
+Refactor del reporte Excel y de los tabs en Google Sheets, motivado por análisis de
+redundancias y necesidad de un dashboard ejecutivo. Sin cambios en la lógica de cálculo.
+
+### Nuevo
+
+- **Hoja `Resumen` (primera del Excel y tab nuevo en Sheets)** — agregación por gerencia
+  + fila TOTAL TUMSA con 14 columnas: Unidades Activas, Operando, Taller, Gestoría, Sin Op,
+  KM Total, Viajes, Diesel LTS, Rendimiento, Objetivo KM/Viajes, Cumplimiento KM %/Viajes %.
+  Para Looker scorecards de página principal.
+
+### Cambiado — naming canónico
+
+Las hojas Excel y tabs Sheets se renombran para consistencia:
+
+| Antes (Excel) | Antes (Sheets) | Ahora (ambos) |
+|---|---|---|
+| `KPIs per Equipment` | `Equipos` | **`Por Equipo`** |
+| `Trip Data` | `Viajes` | **`Viajes`** |
+| `KPIs OpCedula` | `OpCedula` | **`Por Operación`** |
+| `PromedioKMunitOps` | `PromedioKMunitOps` | **`Promedio KM por Unidad`** |
+| — | — | **`Resumen`** (nueva) |
+
+Columnas también consistentes:
+- `Operación cedula` (Viajes, Por Equipo) → **`Operación Cedula`** (alineado con Por Operación)
+- `Operacion_cedula` → **`Operación Cedula`**
+- `Promedio_Diario_KM_U` → **`Promedio Diario KM/U`**
+- `Remolques_Unicos` → **`Remolques Únicos`**
+
+### Eliminado — columnas deadweight (Tier 1)
+
+| Hoja | Columnas removidas | Razón |
+|---|---|---|
+| Viajes | `llaveremolque`, `EqAsignados` | Intermediarios de pipeline; no consumidos por Looker |
+| Por Equipo | `Días Gestoría` | Constante en 0 |
+| Por Operación | `Dias Operando`, `Dias Taller`, `Dias Gestoria`, `Dias Sin Op` | Constantes en 0 |
+
+Reducción: 7 columnas inútiles eliminadas.
+
+### Conservado — denormalización de Viajes intacta
+
+Tras análisis del propósito Looker documentado en `processor.py:1467` y `:1348`, se mantuvo
+intacta la estructura de 74 columnas de `Viajes` (campos `*Foto`, métricas denormalizadas
+de período/OpCedula). Su propósito es ser fuente única con multi-filtro jerárquico para Looker.
+
+### Acción manual requerida
+
+Tras este commit, en el spreadsheet de Google Sheets quedan tabs huérfanos con nombres viejos:
+- `Equipos` (reemplazado por `Por Equipo`)
+- `OpCedula` (reemplazado por `Por Operación`)
+- `PromedioKMunitOps` (reemplazado por `Promedio KM por Unidad`)
+
+**Borrar manualmente** y actualizar las fuentes de datos en Looker Studio para apuntar a los
+nuevos tabs.
+
+### Validación E2E (23/05/2026)
+
+```
+Rango: 2026-05-01 a 2026-05-22 (data de hoy)
+[RESUMEN] Resumen ejecutivo: 9 gerencias + TOTAL
+[OPCED] Hoja Por Operación: 65 operaciones
+[SHEETS] Sheets 'Resumen': 10 filas
+[SHEETS] Sheets 'Por Equipo': 2774 filas
+[SHEETS] Sheets 'Viajes': 17373 filas
+[SHEETS] Sheets 'Promedio KM por Unidad': 65 filas
+
+TOTAL TUMSA: 582 unidades · 3,185,505 KM · 9,742 viajes ·
+             Rendimiento 2.65 · Cumplimiento KM 93.5% · Cumplimiento Viajes 93.3%
+```
+
+### Para iteración futura (no incluido)
+
+- Auditoría Looker vs Viajes para eliminar Tier 2 (columnas calculables en Looker:
+  `KM_total`, `Rendimiento`, `Cuenta remolques`, etc.) — requiere acceso al dashboard
+- Política de archivado de `Outputs/YYYY-MM/`
+- Unificar gerencias mal escritas en BD: `PENDIENTE` y `Pendiente` aparecen como 2 distintas
+
 ## 0.3.0 — 2026-05-22 (Fase 3 — promoción de BD a fuente default)
 
 PostgreSQL es ahora la fuente canónica de cédulas. Excel y Sheets se conservan

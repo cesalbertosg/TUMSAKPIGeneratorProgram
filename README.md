@@ -100,13 +100,19 @@ KPI Generator Program/
 
 ## Salidas
 
-Archivo Excel `KPIs_Transport_YYYYMMDD_HHMMSS.xlsx` con 4 hojas:
-1. **KPIs por equipo** — 32 métricas por unidad-período
-2. **Viajes procesados** — datos limpios consolidados
-3. **Cambios operacionales** — ingresos / egresos / movimientos de equipo
-4. **Resumen por operación-cédula**
+Archivo Excel `KPIs_Transport_YYYYMMDD_HHMMSS.xlsx` con 8 hojas (v0.4.0):
 
-Adicionalmente sincroniza con las Google Sheets configuradas en `.env`.
+1. **Resumen** — vista ejecutiva: 1 fila por gerencia + TOTAL TUMSA (Looker scorecards)
+2. **Por Equipo** — 41 métricas por unidad-período (drill-down)
+3. **Viajes** — datos crudos + denormalización para multi-filtros Looker (74 cols)
+4. **Resumen de Cambios** — ingresos / egresos / cambios operacionales por unidad
+5. **Por Operación** — KPIs agregados por Operación Cédula (29 cols)
+6. **Objetivos** — metas mensuales por operación cédula
+7. **Promedio KM por Unidad** — benchmark de productividad
+8. **Cedulas Rellenadas** — auditoría de forward-fill (solo cuando `CEDULAS_SOURCE=db`)
+
+Adicionalmente sincroniza con Google Sheets configurado en `.env` (7 tabs, espejo de las hojas
+1-7 del Excel).
 
 ## Documentación
 

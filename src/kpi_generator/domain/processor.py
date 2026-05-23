@@ -24,9 +24,44 @@ from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.change_tracker import ChangeTracker
 from kpi_generator.domain.comodato import ComodatoManager
 
+# --- v0.4.0: estructura de hojas y deadweight ---
+# Columnas Tier 1 (deadweight) que se eliminan justo antes de exportar Excel/Sheets.
+# llaveremolque/EqAsignados son intermediarios solo usados internamente para calcular
+# `cuenta llaverem` y verificación de asignación (no consumidos por Looker).
+# `Días Gestoría` y los 4 `Dias *` de OpCedula resultan siempre constantes en 0.
+TRIP_DEADWEIGHT_COLS = ['llaveremolque', 'EqAsignados']
+KPI_EQUIPO_DEADWEIGHT_COLS = ['Días Gestoría']
+KPI_OPCEDULA_DEADWEIGHT_COLS = ['Dias Operando', 'Dias Taller', 'Dias Gestoria', 'Dias Sin Op']
+
+# Nombres canónicos de hojas Excel y tabs Sheets (v0.4.0).
+SHEET_NAMES = {
+    'resumen': 'Resumen',
+    'por_equipo': 'Por Equipo',           # antes: 'KPIs per Equipment'
+    'trip_data': 'Viajes',                # Excel ahora consistente con Sheets
+    'cambios': 'Resumen de Cambios',
+    'por_operacion': 'Por Operación',     # antes: 'KPIs OpCedula'
+    'objetivos': 'Objetivos',
+    'promedio': 'Promedio KM por Unidad', # antes: 'PromedioKMunitOps'
+    'audit': 'Cedulas Rellenadas',
+}
+
+# Nombres de tabs en Google Sheets — mantenemos consistencia con Excel desde v0.4.0.
+# IMPORTANTE: al promover este cambio, hay que borrar manualmente los tabs viejos
+# (Equipos, OpCedula, PromedioKMunitOps) del spreadsheet — Looker debe actualizar fuentes.
+SHEETS_TAB_NAMES = {
+    'resumen': 'Resumen',
+    'por_equipo': 'Por Equipo',
+    'trip_data': 'Viajes',
+    'cambios': 'Cambios',
+    'por_operacion': 'Por Operación',
+    'objetivos': 'Objetivos',
+    'promedio': 'Promedio KM por Unidad',
+}
+
+
 class DataProcessor:
     """Motor optimizado de procesamiento de datos para análisis de KPIs de transporte."""
-    
+
     def __init__(self, log_callback=print, log_level=LogLevel.INFO):
         self.log_func = log_callback
         self.log_level = log_level
@@ -1552,18 +1587,24 @@ class DataProcessor:
             km_total = r.get('KM Total', 0)
             promedio = round(km_total / (motrices * days_elapsed), 4) if motrices > 0 and days_elapsed > 0 else 0
             rows.append({
-                'Operacion_cedula': r.get('Operación Cedula', ''),
+                'Operación Cedula': r.get('Operación Cedula', ''),
                 'Gerencia': r.get('Gerencia', ''),
                 'Motrices': int(motrices),
-                'Remolques_Unicos': int(r.get('Remolques', 0)),
-                'Promedio_Diario_KM_U': promedio
+                'Remolques Únicos': int(r.get('Remolques', 0)),
+                'Promedio Diario KM/U': promedio,
             })
         return pd.DataFrame(rows)
 
-    def upload_to_sheets(self, df_kpi: pd.DataFrame, df_processed: pd.DataFrame,
-                         df_changes: pd.DataFrame, df_opcedula: pd.DataFrame,
-                         df_objectives: pd.DataFrame, df_promedio: pd.DataFrame) -> bool:
-        """C: Subir todos los DataFrames a Google Sheets automáticamente."""
+    def upload_to_sheets(self, df_resumen: pd.DataFrame, df_kpi: pd.DataFrame,
+                         df_processed: pd.DataFrame, df_changes: pd.DataFrame,
+                         df_opcedula: pd.DataFrame, df_objectives: pd.DataFrame,
+                         df_promedio: pd.DataFrame) -> bool:
+        """C: Subir todos los DataFrames a Google Sheets automáticamente (v0.4.0).
+
+        Usa los tabs canónicos definidos en SHEETS_TAB_NAMES. Los tabs viejos
+        (Equipos, OpCedula, PromedioKMunitOps) quedan huérfanos en el spreadsheet
+        y deben borrarse manualmente al promover esta versión.
+        """
         try:
             self.log("Conectando a Google Sheets...", code="SHEETS")
             creds = Credentials.from_service_account_file(Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES)
@@ -1583,12 +1624,13 @@ class DataProcessor:
                 ws.update(data, value_input_option='USER_ENTERED')
                 self.log(f"Sheets '{tab_name}': {len(df)} filas", code="SHEETS")
 
-            write_sheet('Equipos', df_kpi)
-            write_sheet('Viajes', df_processed)
-            write_sheet('Cambios', df_changes)
-            write_sheet('OpCedula', df_opcedula)
-            write_sheet('Objetivos', df_objectives)
-            write_sheet('PromedioKMunitOps', df_promedio)
+            write_sheet(SHEETS_TAB_NAMES['resumen'], df_resumen)
+            write_sheet(SHEETS_TAB_NAMES['por_equipo'], df_kpi)
+            write_sheet(SHEETS_TAB_NAMES['trip_data'], df_processed)
+            write_sheet(SHEETS_TAB_NAMES['cambios'], df_changes)
+            write_sheet(SHEETS_TAB_NAMES['por_operacion'], df_opcedula)
+            write_sheet(SHEETS_TAB_NAMES['objetivos'], df_objectives)
+            write_sheet(SHEETS_TAB_NAMES['promedio'], df_promedio)
 
             self.log("Google Sheets actualizado correctamente", code="SHEETS")
             return True
@@ -1597,58 +1639,167 @@ class DataProcessor:
             self.log(f"Error Google Sheets: {e}", LogLevel.ERROR, "SHEETS")
             return False
 
+    def _drop_deadweight(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+        """Elimina columnas deadweight (intermediarios o constantes) sin fallar si no existen."""
+        if df is None or df.empty:
+            return df
+        to_drop = [c for c in cols if c in df.columns]
+        if to_drop:
+            return df.drop(columns=to_drop)
+        return df
+
+    def _build_resumen_ejecutivo(self, df_opcedula: pd.DataFrame) -> pd.DataFrame:
+        """Construye la hoja Resumen agregando df_opcedula por Gerencia + fila TOTAL.
+
+        Una fila por gerencia con totales de unidades por estatus, KM, viajes, diesel,
+        y cumplimientos ponderados. Última fila = TOTAL TUMSA.
+
+        Sin lógica de cálculo nueva — solo sumas/promedios ponderados sobre Por Operación.
+        """
+        if df_opcedula is None or df_opcedula.empty:
+            self.log("Sin datos de OpCedula para Resumen", code="RESUMEN")
+            return pd.DataFrame()
+
+        df = df_opcedula.copy()
+
+        # Columnas que deben existir; usamos defaults si alguna falta
+        num_cols_sum = {
+            'Motrices Titulares': 'Unidades Activas',
+            'Operando': 'Operando',
+            'Taller': 'Taller',
+            'Gestoria': 'Gestoría',
+            'Sin Op': 'Sin Op',
+            'KM Total': 'KM Total',
+            'Viajes': 'Viajes',
+            'Diesel': 'Diesel LTS',
+            'Objetivo KM': 'Objetivo KM',
+            'Objetivo Viajes': 'Objetivo Viajes',
+        }
+        for col in num_cols_sum:
+            if col not in df.columns:
+                df[col] = 0
+
+        grouped = df.groupby('Gerencia', dropna=False).agg(
+            **{out: (src, 'sum') for src, out in num_cols_sum.items()}
+        ).reset_index()
+
+        # Métricas derivadas (cumplimientos y rendimiento ponderados)
+        grouped['Rendimiento'] = (grouped['KM Total'] / grouped['Diesel LTS']
+                                    ).where(grouped['Diesel LTS'] > 0, 0).round(2)
+        grouped['Cumplimiento KM %'] = (grouped['KM Total'] / grouped['Objetivo KM'] * 100
+                                          ).where(grouped['Objetivo KM'] > 0, 0).round(1)
+        grouped['Cumplimiento Viajes %'] = (grouped['Viajes'] / grouped['Objetivo Viajes'] * 100
+                                              ).where(grouped['Objetivo Viajes'] > 0, 0).round(1)
+
+        # Nota: la categoría 'Disponible' del Excel legacy no existe como columna
+        # separada en Por Operación (la BD agrupa Disponible y Descanso dentro de
+        # 'Operando'). Por eso el Resumen no la incluye — sería siempre 0.
+
+        # Reordenar y agregar fila TOTAL
+        cols_out = ['Gerencia', 'Unidades Activas', 'Operando', 'Taller',
+                    'Gestoría', 'Sin Op', 'KM Total', 'Viajes', 'Diesel LTS',
+                    'Rendimiento', 'Objetivo KM', 'Objetivo Viajes',
+                    'Cumplimiento KM %', 'Cumplimiento Viajes %']
+        grouped = grouped[cols_out]
+
+        total = grouped.drop(columns='Gerencia').sum(numeric_only=True)
+        # Rendimiento y cumplimientos del total se recalculan (no se promedian)
+        total['Rendimiento'] = round(total['KM Total'] / total['Diesel LTS'], 2) if total['Diesel LTS'] > 0 else 0
+        total['Cumplimiento KM %'] = round(total['KM Total'] / total['Objetivo KM'] * 100, 1) if total['Objetivo KM'] > 0 else 0
+        total['Cumplimiento Viajes %'] = round(total['Viajes'] / total['Objetivo Viajes'] * 100, 1) if total['Objetivo Viajes'] > 0 else 0
+        total_row = pd.DataFrame([{'Gerencia': 'TOTAL TUMSA', **total.to_dict()}])
+
+        resumen = pd.concat([grouped, total_row], ignore_index=True)
+        self.log(f"Resumen ejecutivo: {len(grouped)} gerencias + TOTAL", code="RESUMEN")
+        return resumen
+
     def save_results(self, df_kpi: pd.DataFrame, df_processed: pd.DataFrame, df_changes: pd.DataFrame,
                      df_opcedula: pd.DataFrame, output_path: str, df_objectives: pd.DataFrame = None,
                      df_promedio: pd.DataFrame = None, df_cedulas_audit: pd.DataFrame = None,
                      upload_sheets: bool = True) -> Optional[str]:
-        """Generar archivo Excel + subida automática a Google Sheets."""
+        """Generar archivo Excel + subida automática a Google Sheets (v0.4.0).
+
+        Orden de hojas: Resumen → Por Equipo → Viajes → Resumen de Cambios →
+        Por Operación → Objetivos → Promedio KM por Unidad → Cedulas Rellenadas.
+        """
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"KPIs_Transport_{timestamp}.xlsx"
             full_path = Path(output_path) / filename
 
+            # Aplicar drops de deadweight (Tier 1) sin tocar la lógica de cálculo
+            df_kpi = self._drop_deadweight(df_kpi, KPI_EQUIPO_DEADWEIGHT_COLS)
+            df_opcedula = self._drop_deadweight(df_opcedula, KPI_OPCEDULA_DEADWEIGHT_COLS)
+            df_processed = self._drop_deadweight(df_processed, TRIP_DEADWEIGHT_COLS)
+
             df_processed_formatted = df_processed.copy()
             if 'Fecha creación' in df_processed_formatted.columns:
                 df_processed_formatted['Fecha creación'] = df_processed_formatted['Fecha creación'].dt.strftime("%d/%m/%Y")
-            
+            # Naming canónico de columna de operación cedula en outputs (v0.4.0).
+            # Internamente el pipeline usa 'Operación cedula' (c minúscula); aquí
+            # publicamos 'Operación Cedula' para consistencia con Por Operación.
+            if 'Operación cedula' in df_processed_formatted.columns:
+                df_processed_formatted = df_processed_formatted.rename(columns={'Operación cedula': 'Operación Cedula'})
+            if 'OpCedula Foto' in df_processed_formatted.columns:
+                pass  # `OpCedula Foto` permanece (es el snapshot, distinto del histórico)
+            # df_kpi también puede tener la columna en minúscula
+            if 'Operación cedula' in df_kpi.columns:
+                df_kpi = df_kpi.rename(columns={'Operación cedula': 'Operación Cedula'})
+
+            # Construir Resumen ejecutivo a partir de Por Operación
+            df_resumen = self._build_resumen_ejecutivo(df_opcedula)
+
             with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
-                df_kpi.to_excel(writer, sheet_name='KPIs per Equipment', index=False)
-                df_processed_formatted.to_excel(writer, sheet_name='Trip Data', index=False)
-                
+                # 1. Resumen ejecutivo (vista de página principal)
+                if not df_resumen.empty:
+                    df_resumen.to_excel(writer, sheet_name=SHEET_NAMES['resumen'], index=False)
+
+                # 2. KPIs por equipo (drill-down)
+                df_kpi.to_excel(writer, sheet_name=SHEET_NAMES['por_equipo'], index=False)
+
+                # 3. Viajes denormalizados (fuente única Looker)
+                df_processed_formatted.to_excel(writer, sheet_name=SHEET_NAMES['trip_data'], index=False)
+
+                # 4. Cambios operacionales
                 if not df_changes.empty:
-                    df_changes.to_excel(writer, sheet_name='Resumen de Cambios', index=False)
-                    self.log(f"Hoja Resumen Cambios: {len(df_changes)} cambios", code="CHG")
+                    df_changes.to_excel(writer, sheet_name=SHEET_NAMES['cambios'], index=False)
+                    self.log(f"Hoja {SHEET_NAMES['cambios']}: {len(df_changes)} cambios", code="CHG")
                 else:
-                    self.log("Hoja Resumen Cambios: Sin cambios operacionales para reportar", code="CHG")
+                    self.log(f"Hoja {SHEET_NAMES['cambios']}: Sin cambios operacionales", code="CHG")
 
+                # 5. KPIs por operación cédula
                 if not df_opcedula.empty:
-                    df_opcedula.to_excel(writer, sheet_name='KPIs OpCedula', index=False)
-                    self.log(f"Hoja KPIs OpCedula: {len(df_opcedula)} operaciones", code="OPCED")
+                    df_opcedula.to_excel(writer, sheet_name=SHEET_NAMES['por_operacion'], index=False)
+                    self.log(f"Hoja {SHEET_NAMES['por_operacion']}: {len(df_opcedula)} operaciones", code="OPCED")
                 else:
-                    self.log("Hoja KPIs OpCedula: Sin operaciones para reportar", code="OPCED")
+                    self.log(f"Hoja {SHEET_NAMES['por_operacion']}: Sin operaciones", code="OPCED")
 
-                # A: Hojas extra que antes vivían en Google Sheets
+                # 6. Objetivos
                 if df_objectives is not None and not df_objectives.empty:
-                    df_objectives.to_excel(writer, sheet_name='Objetivos', index=False)
-                if df_promedio is not None and not df_promedio.empty:
-                    df_promedio.to_excel(writer, sheet_name='PromedioKMunitOps', index=False)
+                    df_objectives.to_excel(writer, sheet_name=SHEET_NAMES['objetivos'], index=False)
 
-                # Auditoría de forward-fill (solo cuando source='db')
+                # 7. Promedio KM por unidad (benchmark)
+                if df_promedio is not None and not df_promedio.empty:
+                    df_promedio.to_excel(writer, sheet_name=SHEET_NAMES['promedio'], index=False)
+
+                # 8. Auditoría de forward-fill (solo cuando source='db')
                 if df_cedulas_audit is not None and not df_cedulas_audit.empty:
-                    df_cedulas_audit.to_excel(writer, sheet_name='Cedulas Rellenadas', index=False)
+                    df_cedulas_audit.to_excel(writer, sheet_name=SHEET_NAMES['audit'], index=False)
                     rellenadas = (df_cedulas_audit['Origen'] == 'forward_fill').sum()
-                    self.log(f"Hoja Cedulas Rellenadas: {rellenadas} días por forward-fill "
+                    self.log(f"Hoja {SHEET_NAMES['audit']}: {rellenadas} días por forward-fill "
                              f"de {len(df_cedulas_audit)} totales", code="AUDIT")
 
                 self._format_excel_columns(writer)
 
             self.log(f"Archivo: {filename}", code="SAVE")
 
-            # C: Subida automática a Google Sheets
+            # Subida automática a Google Sheets (con Resumen incluido)
             if upload_sheets:
-                self.upload_to_sheets(df_kpi, df_processed_formatted, df_changes, df_opcedula,
-                                      df_objectives if df_objectives is not None else pd.DataFrame(),
-                                      df_promedio if df_promedio is not None else pd.DataFrame())
+                self.upload_to_sheets(
+                    df_resumen, df_kpi, df_processed_formatted, df_changes, df_opcedula,
+                    df_objectives if df_objectives is not None else pd.DataFrame(),
+                    df_promedio if df_promedio is not None else pd.DataFrame(),
+                )
 
             return str(full_path)
 
@@ -1659,8 +1810,7 @@ class DataProcessor:
     def _format_excel_columns(self, writer):
         """Formatear columnas de Excel de manera eficiente."""
         try:
-            for sheet_name in ['KPIs per Equipment', 'Trip Data', 'Resumen de Cambios', 'KPIs OpCedula',
-                                'Objetivos', 'PromedioKMunitOps', 'Cedulas Rellenadas']:
+            for sheet_name in list(SHEET_NAMES.values()):
                 if sheet_name in writer.sheets:
                     worksheet = writer.sheets[sheet_name]
                     for column in worksheet.columns:
