@@ -130,6 +130,8 @@ Adicionalmente sincroniza con Google Sheets configurado en `.env` (7 tabs, espej
 
 - [`docs/arquitectura.md`](docs/arquitectura.md) — visión técnica del sistema
 - [`docs/flujo-logico.md`](docs/flujo-logico.md) — flujo lógico KPI y objetivos
+- [`docs/diccionario-viajes.md`](docs/diccionario-viajes.md) — diccionario completo de las 74 columnas de la hoja `Viajes` (significado, tipo, origen, cómo agregar en Looker)
+- [`docs/migracion-cedulas-db.md`](docs/migracion-cedulas-db.md) — migración a PostgreSQL como fuente de cédulas
 - [`docs/cambios.md`](docs/cambios.md) — changelog
 
 ## Contexto
