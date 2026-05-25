@@ -1341,10 +1341,11 @@ class DataProcessor:
         cedula_map = last_cedula.set_index('Unidades')['CedulaActual'].to_dict()
         df['CedulaActual'] = df['Equipo Motriz'].map(cedula_map).fillna(df.get('Operación cedula', ''))
 
-        # Cuenta remolques — cuántos remolques lleva este viaje (0, 1 o 2)
-        r1_ok = df['Equipo Remolque 1'].notna() & (df['Equipo Remolque 1'].astype(str).str.strip() != '')
-        r2_ok = df['Equipo Remolque 2'].notna() & (df['Equipo Remolque 2'].astype(str).str.strip() != '')
-        df['Cuenta remolques'] = r1_ok.astype(int) + r2_ok.astype(int)
+        # Cuenta remolques — remolques únicos por OpCedula, prorrateado entre viajes
+        # con remolque registrado para que SUM(Cuenta remolques) en Looker == # único.
+        # Reemplaza el algoritmo viejo (1 o 2 por viaje) que inflaba la suma y duplicaba
+        # cuando un mismo remolque aparecía en R1 y R2 del mismo viaje.
+        df['Cuenta remolques'] = self._contar_remolques_unicos_prorrateado(df)
 
         # llaveremolque — clave compuesta de remolques para deduplicación
         r1 = df['Equipo Remolque 1'].fillna('').astype(str).str.strip()
@@ -1494,6 +1495,60 @@ class DataProcessor:
 
         self.log("Tendencia KM y Viajes distribuidas por fila (aditivas)", code="TEND")
         return df
+
+    @staticmethod
+    def _contar_remolques_unicos_prorrateado(df: pd.DataFrame) -> pd.Series:
+        """Cuenta remolques únicos por Operación Cedula y prorratea entre los viajes
+        con remolque registrado.
+
+        Lógica:
+          1. Aislar (Operación Cedula, Equipo Remolque 1) y (Operación Cedula, Equipo Remolque 2)
+             como dos DataFrames con columna unificada `Remolque`.
+          2. Concatenar y descartar filas con Remolque vacío.
+          3. drop_duplicates por (Operación Cedula, Remolque) — el mismo remolque
+             en R1 y R2 del mismo viaje cuenta una sola vez.
+          4. groupby(Operación Cedula).size() → total único por OpCédula.
+          5. Calcular viajes con remolque por OpCédula (denominador del prorrateo).
+          6. Devolver Serie alineada al df original con:
+               - 0  si el viaje no tiene remolque registrado (comodatos, viajes sin remolque)
+               - total_unicos / viajes_con_remolque  si tiene al menos un remolque
+
+        Garantía: SUM(Cuenta remolques) filtrado por Operación Cedula == número de
+        remolques únicos usados en esa OpCédula durante todo el período.
+        """
+        op_col = 'Operación cedula'
+        if op_col not in df.columns:
+            return pd.Series(0.0, index=df.index, dtype='float64')
+
+        def _norm(s: pd.Series) -> pd.Series:
+            return s.fillna('').astype(str).str.strip()
+
+        r1 = _norm(df['Equipo Remolque 1'])
+        r2 = _norm(df['Equipo Remolque 2'])
+        opc = _norm(df[op_col])
+
+        # Máscara de viajes con AL MENOS un remolque registrado (denominador del prorrateo)
+        tiene_remolque = (r1 != '') | (r2 != '')
+        viajes_con_remolque_por_opc = (
+            opc.where(tiene_remolque).dropna().value_counts()
+        )
+
+        # Construir tabla larga (OpCedula, Remolque) y deduplicar
+        long_r1 = pd.DataFrame({'opc': opc, 'rem': r1})
+        long_r2 = pd.DataFrame({'opc': opc, 'rem': r2})
+        long = pd.concat([long_r1, long_r2], ignore_index=True)
+        long = long[(long['rem'] != '') & (long['opc'] != '')]
+        unicos_por_opc = (
+            long.drop_duplicates(subset=['opc', 'rem'])
+                .groupby('opc').size()
+        )
+
+        # Prorrateo: cada viaje-con-remolque recibe (unicos / n_viajes_con_remolque)
+        prorrateo = (unicos_por_opc / viajes_con_remolque_por_opc).fillna(0)
+        result = opc.map(prorrateo).fillna(0).astype('float64')
+        # Filas sin remolque reciben 0 (no participan en la suma)
+        result = result.where(tiene_remolque, 0.0)
+        return result.round(6)
 
     def _denormalize_kpis_to_trips(self, df_trips: pd.DataFrame,
                                     df_final: pd.DataFrame,

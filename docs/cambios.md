@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.4.2 — 2026-05-25 (Fix: Cuenta remolques con prorrateo)
+
+### Bug
+
+`Cuenta remolques` calculaba **1 o 2 por viaje** (cuántos slots de remolque llevaba el viaje).
+Eso causaba dos problemas críticos en Looker:
+
+1. **Sumas infladas**: `SUM(Cuenta remolques)` agrupado por OpCédula devolvía la suma de slots usados,
+   no el número de remolques únicos. En SORIANA VILLA SENCILLO podía dar 280 cuando los remolques
+   únicos reales eran 140.
+2. **Duplicación cuando el mismo remolque aparece en R1 y R2 del mismo viaje** (caso real:
+   T667 con remolque 40331 en ambas columnas) — sumaba 2 por ese remolque que en realidad es 1.
+
+### Solución
+
+Nueva función `_contar_remolques_unicos_prorrateado` que:
+
+1. Aísla `(Operación Cedula, Remolque 1)` y `(Operación Cedula, Remolque 2)` como dos DataFrames
+2. Los consolida en columna única `Remolque`
+3. `drop_duplicates` por `(OpCédula, Remolque)` — el mismo remolque cuenta una sola vez aunque
+   aparezca en R1 y R2 del mismo viaje
+4. `groupby(OpCédula).size()` → total único por OpCédula
+5. **Prorratea**: cada viaje con remolque registrado recibe `total_unicos / n_viajes_con_remolque`.
+   Comodatos y viajes sin remolque reciben 0.
+
+**Garantía:** `SUM(Cuenta remolques)` filtrado por OpCédula == número de remolques únicos
+usados en esa OpCédula durante todo el período.
+
+### Tests nuevos
+
+`tests/unit/test_contar_remolques.py` con 8 casos:
+
+- Remolque duplicado en R1 y R2 del mismo viaje cuenta 1
+- Mismo remolque en 2 viajes de misma OpCédula cuenta 1 (prorrateo 0.5/0.5)
+- Dos remolques distintos cuentan 2
+- OpCédulas independientes
+- Viajes sin remolque reciben 0 (no contaminan suma)
+- Caso de imagen Beto: T667 / SORIANA VILLA con 40331 duplicado
+- Caso compuesto multi-OpCédula
+- Defensivo: sin columna OpCédula no truena
+
+### Validación E2E (25/05/2026)
+
+```
+62 OpCédulas evaluadas — 0 discrepancias
+SORIANA VILLA FULL:      SUM=117.00  Unique=117  OK
+SORIANA VILLA SENCILLO:  SUM=140.00  Unique=140  OK
+SORIANA VILLA PATIO:     SUM=  3.00  Unique=  3  OK
+```
+
+Suite: **24/24 pytest verde** (5 audit + 3 db_vs_excel + 1 pipeline + 5 cedulas_db + 8 remolques + 2 audit-full).
+
+### Para iteración futura
+
+El campo `cuenta llaverem` tiene el mismo patrón (conteo único por día+OpCédula vía `.transform('nunique')`)
+que también suma mal en Looker. No se incluye en este commit por scope; aplicar la misma lógica
+cuando se quiera consolidar.
+
 ## 0.4.1 — 2026-05-23 (Auditoría de salud)
 
 Nuevo subsistema de auditoría: smoke tests (~3s) y validación E2E (~3-5min) con
