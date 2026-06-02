@@ -355,8 +355,9 @@ class KPIGeneratorGUI:
     
     def clear_cache(self):
         """Limpiar cache del procesador."""
+        from kpi_generator.io.excel import parse_cedula_filename
         self.processor._get_operacion_cedula.cache_clear()
-        self.processor._parse_cedula_filename.cache_clear()
+        parse_cedula_filename.cache_clear()
         self.processor._get_daily_objective.cache_clear()
         self.processor._objective_cache.clear()
         self.processor._cedula_cache.clear()

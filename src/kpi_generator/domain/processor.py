@@ -8,21 +8,20 @@ listos para escribir a Excel y Google Sheets.
 from __future__ import annotations
 
 import calendar
-import re
 from collections import Counter
 from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import gspread
 import numpy as np
 import pandas as pd
-from google.oauth2.service_account import Credentials
 
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.change_tracker import ChangeTracker
 from kpi_generator.domain.comodato import ComodatoManager
+from kpi_generator.io import excel as excel_io
+from kpi_generator.io import sheets as sheets_io
 
 # --- v0.4.0: estructura de hojas y deadweight ---
 # Columnas Tier 1 (deadweight) que se eliminan justo antes de exportar Excel/Sheets.
@@ -77,225 +76,21 @@ class DataProcessor:
             prefix = f"[{code}]" if code else ""
             self.log_func(f"{prefix} {message}")
     
-    @lru_cache(maxsize=128)
-    def _parse_cedula_filename(self, filename: str) -> Optional[datetime]:
-        """Extraer fecha del nombre de archivo de cédula (cached)."""
-        patterns = [
-            r'cedula\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})\.xlsx?',
-            r'c[eé]dula\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})\.xlsx?',
-            r'cedula\s*(\d{2})(\d{2})(\d{4})\.xlsx?',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, filename.lower())
-            if match:
-                try:
-                    day, month, year = map(int, match.groups())
-                    return datetime(year, month, day)
-                except ValueError:
-                    continue
-        return None
-    
     def load_daily_cedulas(self, cedulas_folder: str) -> Optional[pd.DataFrame]:
-        """Cargar y consolidar cédulas diarias optimizado."""
-        try:
-            self.log("Cargando cédulas", code="LOAD")
-            folder_path = Path(cedulas_folder)
-            
-            if not folder_path.exists() or not folder_path.is_dir():
-                self.log("Carpeta cédulas inválida", LogLevel.ERROR, "ERR")
-                return None
-            
-            cedula_files = [
-                (file_path, self._parse_cedula_filename(file_path.name))
-                for file_path in folder_path.glob("*.xlsx")
-            ]
-            
-            valid_files = [(f, d) for f, d in cedula_files if d is not None]
-            invalid_files = [f.name for f, d in cedula_files if d is None]
-            
-            if invalid_files:
-                self.log(f"Archivos formato inválido: {len(invalid_files)}", LogLevel.ERROR, "ERR")
-                return None
-            
-            if not valid_files:
-                self.log("Sin archivos válidos", LogLevel.ERROR, "ERR")
-                return None
-            
-            valid_files.sort(key=lambda x: x[1])
-            
-            consolidated_cedulas = []
-            required_cols = Config.COLUMNS["units"]
-            
-            for file_path, fecha in valid_files:
-                try:
-                    df = pd.read_excel(file_path)
-                    
-                    if not all(col in df.columns for col in required_cols):
-                        missing = [col for col in required_cols if col not in df.columns]
-                        self.log(f"Columnas faltantes en {file_path.name}: {missing}", LogLevel.ERROR, "ERR")
-                        return None
-                    
-                    df['Fecha Cedula'] = fecha.strftime("%d/%m/%Y")
-                    df['Fecha Cedula_dt'] = fecha
-                    consolidated_cedulas.append(df)
-                    
-                except Exception as e:
-                    self.log(f"Error procesando {file_path.name}: {e}", LogLevel.ERROR, "ERR")
-                    return None
-            
-            df_cedulas = pd.concat(consolidated_cedulas, ignore_index=True)
-            df_cedulas = self._fill_missing_dates(df_cedulas)
-            
-            self.log(f"Cédulas: {len(df_cedulas)} registros", code="OK")
-            return df_cedulas
-            
-        except Exception as e:
-            self.log(f"Error carga cédulas: {e}", LogLevel.ERROR, "ERR")
-            return None
-    
+        """Delegado a `io.excel.load_daily_cedulas` (refactor v0.4.3)."""
+        return excel_io.load_daily_cedulas(cedulas_folder, self.log)
+
     def _fill_missing_dates(self, df_cedulas: pd.DataFrame) -> pd.DataFrame:
-        """Rellenar fechas faltantes optimizado."""
-        date_range = pd.date_range(
-            start=df_cedulas['Fecha Cedula_dt'].min(),
-            end=df_cedulas['Fecha Cedula_dt'].max(),
-            freq='D'
-        )
-        existing_sorted = sorted(set(df_cedulas['Fecha Cedula_dt']))
-        existing_set = set(existing_sorted)
-        missing_dates = sorted(d for d in date_range if d not in existing_set)
+        """Delegado a `io.excel.fill_missing_dates` (refactor v0.4.3).
 
-        if not missing_dates:
-            return df_cedulas
-
-        self.log(f"Rellenando {len(missing_dates)} fechas", LogLevel.DEBUG, "FILL")
-
-        # Snapshot por fecha existente — solo se lee una vez por fecha
-        snapshots = {d: df_cedulas[df_cedulas['Fecha Cedula_dt'] == d] for d in existing_sorted}
-
-        fill_frames = [df_cedulas]
-        ptr = 0
-        for missing_date in missing_dates:
-            # Avanzar puntero hasta la fecha anterior más cercana (O(n) total, no O(n) por iteración)
-            while ptr < len(existing_sorted) and existing_sorted[ptr] < missing_date:
-                ptr += 1
-            if ptr == 0:
-                continue
-            closest = existing_sorted[ptr - 1]
-            records = snapshots[closest].copy()
-            records['Fecha Cedula'] = missing_date.strftime("%d/%m/%Y")
-            records['Fecha Cedula_dt'] = missing_date
-            fill_frames.append(records)
-
-        return pd.concat(fill_frames, ignore_index=True)
+        Se mantiene como metodo de instancia para compatibilidad con
+        `load_cedula_from_sheets`, que tambien rellena fechas ausentes.
+        """
+        return excel_io.fill_missing_dates(df_cedulas)
 
     def load_cedula_from_sheets(self, sheet_id: str, tab_name: str = None) -> Optional[pd.DataFrame]:
-        """Carga la cédula mensual desde Google Sheets (formato horizontal) y la convierte
-        al formato vertical que espera el resto del pipeline (una fila por unidad+día)."""
-        DATE_COL_RE = re.compile(r'^\d{2}/\d{2}/\d{4}$')
-        UNIT_ID_RE = re.compile(r'^[A-Za-z][A-Za-z0-9]+$')  # C070, T317, FL7, etc.
-        SUBTOTAL_RE = re.compile(r'^\d+\s+al\s+\d+|en\s+adelante', re.IGNORECASE)
-        SKIP_COL_NAMES = {'Taller', 'Gestoría', 'Sin operador', 'Sin Operador', ''}
-
-        try:
-            self.log("Conectando a Google Sheets para cédula", code="LOAD")
-            creds = Credentials.from_service_account_file(
-                Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
-            )
-            gc = gspread.authorize(creds)
-            sh = gc.open_by_key(sheet_id)
-
-            if tab_name is None:
-                tab_name = sh.worksheets()[0].title
-                self.log(f"Tab seleccionado: {tab_name}", LogLevel.DEBUG, "LOAD")
-
-            ws = sh.worksheet(tab_name)
-            all_rows = ws.get_all_values()
-
-            if not all_rows:
-                self.log("Sheet vacía", LogLevel.ERROR, "ERR")
-                return None
-
-            # Localizar la fila de encabezado principal (contiene 'Unidad' y 'Gerencia')
-            header_idx = next(
-                (i for i, row in enumerate(all_rows) if 'Unidad' in row and 'Gerencia' in row),
-                None
-            )
-            if header_idx is None:
-                self.log("Encabezado de cédula no encontrado en el sheet", LogLevel.ERROR, "ERR")
-                return None
-
-            header = all_rows[header_idx]
-            data_rows = all_rows[header_idx + 1:]
-
-            # Columnas de fecha (DD/MM/YYYY), excluir subtotales y conteos
-            date_col_indices = [i for i, h in enumerate(header) if DATE_COL_RE.match(h)]
-            if not date_col_indices:
-                self.log("Sin columnas de fecha en el sheet", LogLevel.ERROR, "ERR")
-                return None
-
-            unit_col_idx = header.index('Unidad')
-
-            # Filas de unidades activas: primera columna coincide con patrón de ID de equipo
-            unit_rows = [
-                row for row in data_rows
-                if len(row) > unit_col_idx and UNIT_ID_RE.match(row[unit_col_idx].strip())
-            ]
-
-            if not unit_rows:
-                self.log("Sin unidades válidas en el sheet", LogLevel.ERROR, "ERR")
-                return None
-
-            # Detectar dinámicamente todas las columnas de metadatos (excluye fechas y subtotales)
-            meta_col_indices = [
-                i for i, h in enumerate(header)
-                if not DATE_COL_RE.match(h.strip())
-                and not SUBTOTAL_RE.match(h.strip())
-                and h.strip() not in SKIP_COL_NAMES
-            ]
-
-            # Construir registros: un registro por (unidad, fecha)
-            records = []
-            for row in unit_rows:
-                padded = row + [''] * max(0, len(header) - len(row))
-                meta = {header[i]: padded[i].strip() for i in meta_col_indices}
-                for col_idx in date_col_indices:
-                    records.append({
-                        **meta,
-                        'Fecha Cedula': header[col_idx],
-                        'Operando': padded[col_idx].strip() if col_idx < len(padded) else '',
-                    })
-
-            df = pd.DataFrame(records)
-
-            # Renombrar 'Unidad' → 'Unidades' para compatibilidad con el pipeline
-            df = df.rename(columns={'Unidad': 'Unidades'})
-
-            # Normalizar IDs y parsear fechas
-            df['Unidades'] = df['Unidades'].str.strip().str.upper()
-            df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula'], dayfirst=True)
-            df = df.sort_values(['Unidades', 'Fecha Cedula_dt'])
-
-            # Forward-fill: celda vacía hereda el estatus del día anterior de la misma unidad
-            df['Operando'] = (
-                df.groupby('Unidades')['Operando']
-                .transform(lambda s: s.replace('', None).ffill())
-                .fillna('Desconocido')
-            )
-
-            # Rellenar fechas completamente ausentes (igual que con archivos locales)
-            df = self._fill_missing_dates(df)
-
-            self.log(
-                f"Cédula Sheets: {df['Unidades'].nunique()} unidades, "
-                f"{df['Fecha Cedula_dt'].nunique()} días",
-                code="OK"
-            )
-            return df
-
-        except Exception as e:
-            self.log(f"Error carga cédula desde Sheets: {e}", LogLevel.ERROR, "ERR")
-            return None
+        """Delegado a `io.sheets.load_cedula_from_sheet` (refactor v0.4.3)."""
+        return sheets_io.load_cedula_from_sheet(sheet_id, self.log, tab_name)
 
     def load_data(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                   objectives_file: str = None, cedulas_sheet_id: str = None,
@@ -1654,45 +1449,21 @@ class DataProcessor:
                          df_processed: pd.DataFrame, df_changes: pd.DataFrame,
                          df_opcedula: pd.DataFrame, df_objectives: pd.DataFrame,
                          df_promedio: pd.DataFrame) -> bool:
-        """C: Subir todos los DataFrames a Google Sheets automáticamente (v0.4.0).
+        """Delegado a `io.sheets.sync_workbook_to_sheets` (refactor v0.4.3).
 
-        Usa los tabs canónicos definidos en SHEETS_TAB_NAMES. Los tabs viejos
-        (Equipos, OpCedula, PromedioKMunitOps) quedan huérfanos en el spreadsheet
-        y deben borrarse manualmente al promover esta versión.
+        Arma el dict {tab_name: df} respetando el orden canonico de `SHEETS_TAB_NAMES`
+        y delega la subida a la capa de I/O.
         """
-        try:
-            self.log("Conectando a Google Sheets...", code="SHEETS")
-            creds = Credentials.from_service_account_file(Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES)
-            gc = gspread.authorize(creds)
-            sh = gc.open_by_key(Config.SHEETS_ID)
-
-            def write_sheet(tab_name: str, df: pd.DataFrame):
-                if df is None or df.empty:
-                    return
-                df_str = df.fillna('').astype(str)
-                data = [df_str.columns.tolist()] + df_str.values.tolist()
-                try:
-                    ws = sh.worksheet(tab_name)
-                except gspread.WorksheetNotFound:
-                    ws = sh.add_worksheet(title=tab_name, rows=len(df) + 2, cols=len(df.columns) + 1)
-                ws.clear()
-                ws.update(data, value_input_option='USER_ENTERED')
-                self.log(f"Sheets '{tab_name}': {len(df)} filas", code="SHEETS")
-
-            write_sheet(SHEETS_TAB_NAMES['resumen'], df_resumen)
-            write_sheet(SHEETS_TAB_NAMES['por_equipo'], df_kpi)
-            write_sheet(SHEETS_TAB_NAMES['trip_data'], df_processed)
-            write_sheet(SHEETS_TAB_NAMES['cambios'], df_changes)
-            write_sheet(SHEETS_TAB_NAMES['por_operacion'], df_opcedula)
-            write_sheet(SHEETS_TAB_NAMES['objetivos'], df_objectives)
-            write_sheet(SHEETS_TAB_NAMES['promedio'], df_promedio)
-
-            self.log("Google Sheets actualizado correctamente", code="SHEETS")
-            return True
-
-        except Exception as e:
-            self.log(f"Error Google Sheets: {e}", LogLevel.ERROR, "SHEETS")
-            return False
+        dfs = {
+            SHEETS_TAB_NAMES['resumen']: df_resumen,
+            SHEETS_TAB_NAMES['por_equipo']: df_kpi,
+            SHEETS_TAB_NAMES['trip_data']: df_processed,
+            SHEETS_TAB_NAMES['cambios']: df_changes,
+            SHEETS_TAB_NAMES['por_operacion']: df_opcedula,
+            SHEETS_TAB_NAMES['objetivos']: df_objectives,
+            SHEETS_TAB_NAMES['promedio']: df_promedio,
+        }
+        return sheets_io.sync_workbook_to_sheets(Config.SHEETS_ID, dfs, self.log)
 
     def _drop_deadweight(self, df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
         """Elimina columnas deadweight (intermediarios o constantes) sin fallar si no existen."""
@@ -1772,107 +1543,72 @@ class DataProcessor:
                      df_opcedula: pd.DataFrame, output_path: str, df_objectives: pd.DataFrame = None,
                      df_promedio: pd.DataFrame = None, df_cedulas_audit: pd.DataFrame = None,
                      upload_sheets: bool = True) -> Optional[str]:
-        """Generar archivo Excel + subida automática a Google Sheets (v0.4.0).
+        """Genera el Excel KPI y opcionalmente sincroniza a Google Sheets (v0.4.3).
+
+        Esta capa hace LOGICA de presentacion (drops de deadweight, naming canonico,
+        construccion de Resumen ejecutivo). La escritura fisica del archivo y la
+        subida a Sheets se delegan a `io.excel.write_workbook` y `upload_to_sheets`.
 
         Orden de hojas: Resumen → Por Equipo → Viajes → Resumen de Cambios →
         Por Operación → Objetivos → Promedio KM por Unidad → Cedulas Rellenadas.
         """
-        try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"KPIs_Transport_{timestamp}.xlsx"
-            full_path = Path(output_path) / filename
+        # Drops de deadweight (Tier 1) sin tocar la logica de calculo
+        df_kpi = self._drop_deadweight(df_kpi, KPI_EQUIPO_DEADWEIGHT_COLS)
+        df_opcedula = self._drop_deadweight(df_opcedula, KPI_OPCEDULA_DEADWEIGHT_COLS)
+        df_processed = self._drop_deadweight(df_processed, TRIP_DEADWEIGHT_COLS)
 
-            # Aplicar drops de deadweight (Tier 1) sin tocar la lógica de cálculo
-            df_kpi = self._drop_deadweight(df_kpi, KPI_EQUIPO_DEADWEIGHT_COLS)
-            df_opcedula = self._drop_deadweight(df_opcedula, KPI_OPCEDULA_DEADWEIGHT_COLS)
-            df_processed = self._drop_deadweight(df_processed, TRIP_DEADWEIGHT_COLS)
+        # Formato + naming canonico de la hoja Viajes (v0.4.0)
+        df_processed_formatted = df_processed.copy()
+        if 'Fecha creación' in df_processed_formatted.columns:
+            df_processed_formatted['Fecha creación'] = df_processed_formatted['Fecha creación'].dt.strftime("%d/%m/%Y")
+        # Internamente el pipeline usa 'Operación cedula' (c minuscula); aqui
+        # publicamos 'Operación Cedula' para consistencia con Por Operación.
+        if 'Operación cedula' in df_processed_formatted.columns:
+            df_processed_formatted = df_processed_formatted.rename(columns={'Operación cedula': 'Operación Cedula'})
+        if 'Operación cedula' in df_kpi.columns:
+            df_kpi = df_kpi.rename(columns={'Operación cedula': 'Operación Cedula'})
 
-            df_processed_formatted = df_processed.copy()
-            if 'Fecha creación' in df_processed_formatted.columns:
-                df_processed_formatted['Fecha creación'] = df_processed_formatted['Fecha creación'].dt.strftime("%d/%m/%Y")
-            # Naming canónico de columna de operación cedula en outputs (v0.4.0).
-            # Internamente el pipeline usa 'Operación cedula' (c minúscula); aquí
-            # publicamos 'Operación Cedula' para consistencia con Por Operación.
-            if 'Operación cedula' in df_processed_formatted.columns:
-                df_processed_formatted = df_processed_formatted.rename(columns={'Operación cedula': 'Operación Cedula'})
-            if 'OpCedula Foto' in df_processed_formatted.columns:
-                pass  # `OpCedula Foto` permanece (es el snapshot, distinto del histórico)
-            # df_kpi también puede tener la columna en minúscula
-            if 'Operación cedula' in df_kpi.columns:
-                df_kpi = df_kpi.rename(columns={'Operación cedula': 'Operación Cedula'})
+        # Resumen ejecutivo a partir de Por Operación
+        df_resumen = self._build_resumen_ejecutivo(df_opcedula)
 
-            # Construir Resumen ejecutivo a partir de Por Operación
-            df_resumen = self._build_resumen_ejecutivo(df_opcedula)
+        # Logs por hoja (mantienen la traza historica del pipeline)
+        if df_changes is not None and not df_changes.empty:
+            self.log(f"Hoja {SHEET_NAMES['cambios']}: {len(df_changes)} cambios", code="CHG")
+        else:
+            self.log(f"Hoja {SHEET_NAMES['cambios']}: Sin cambios operacionales", code="CHG")
+        if df_opcedula is not None and not df_opcedula.empty:
+            self.log(f"Hoja {SHEET_NAMES['por_operacion']}: {len(df_opcedula)} operaciones", code="OPCED")
+        else:
+            self.log(f"Hoja {SHEET_NAMES['por_operacion']}: Sin operaciones", code="OPCED")
+        if df_cedulas_audit is not None and not df_cedulas_audit.empty:
+            rellenadas = (df_cedulas_audit['Origen'] == 'forward_fill').sum()
+            self.log(f"Hoja {SHEET_NAMES['audit']}: {rellenadas} días por forward-fill "
+                     f"de {len(df_cedulas_audit)} totales", code="AUDIT")
 
-            with pd.ExcelWriter(full_path, engine='openpyxl') as writer:
-                # 1. Resumen ejecutivo (vista de página principal)
-                if not df_resumen.empty:
-                    df_resumen.to_excel(writer, sheet_name=SHEET_NAMES['resumen'], index=False)
-
-                # 2. KPIs por equipo (drill-down)
-                df_kpi.to_excel(writer, sheet_name=SHEET_NAMES['por_equipo'], index=False)
-
-                # 3. Viajes denormalizados (fuente única Looker)
-                df_processed_formatted.to_excel(writer, sheet_name=SHEET_NAMES['trip_data'], index=False)
-
-                # 4. Cambios operacionales
-                if not df_changes.empty:
-                    df_changes.to_excel(writer, sheet_name=SHEET_NAMES['cambios'], index=False)
-                    self.log(f"Hoja {SHEET_NAMES['cambios']}: {len(df_changes)} cambios", code="CHG")
-                else:
-                    self.log(f"Hoja {SHEET_NAMES['cambios']}: Sin cambios operacionales", code="CHG")
-
-                # 5. KPIs por operación cédula
-                if not df_opcedula.empty:
-                    df_opcedula.to_excel(writer, sheet_name=SHEET_NAMES['por_operacion'], index=False)
-                    self.log(f"Hoja {SHEET_NAMES['por_operacion']}: {len(df_opcedula)} operaciones", code="OPCED")
-                else:
-                    self.log(f"Hoja {SHEET_NAMES['por_operacion']}: Sin operaciones", code="OPCED")
-
-                # 6. Objetivos
-                if df_objectives is not None and not df_objectives.empty:
-                    df_objectives.to_excel(writer, sheet_name=SHEET_NAMES['objetivos'], index=False)
-
-                # 7. Promedio KM por unidad (benchmark)
-                if df_promedio is not None and not df_promedio.empty:
-                    df_promedio.to_excel(writer, sheet_name=SHEET_NAMES['promedio'], index=False)
-
-                # 8. Auditoría de forward-fill (solo cuando source='db')
-                if df_cedulas_audit is not None and not df_cedulas_audit.empty:
-                    df_cedulas_audit.to_excel(writer, sheet_name=SHEET_NAMES['audit'], index=False)
-                    rellenadas = (df_cedulas_audit['Origen'] == 'forward_fill').sum()
-                    self.log(f"Hoja {SHEET_NAMES['audit']}: {rellenadas} días por forward-fill "
-                             f"de {len(df_cedulas_audit)} totales", code="AUDIT")
-
-                self._format_excel_columns(writer)
-
-            self.log(f"Archivo: {filename}", code="SAVE")
-
-            # Subida automática a Google Sheets (con Resumen incluido)
-            if upload_sheets:
-                self.upload_to_sheets(
-                    df_resumen, df_kpi, df_processed_formatted, df_changes, df_opcedula,
-                    df_objectives if df_objectives is not None else pd.DataFrame(),
-                    df_promedio if df_promedio is not None else pd.DataFrame(),
-                )
-
-            return str(full_path)
-
-        except Exception as e:
-            self.log(f"Error generación archivo: {e}", LogLevel.ERROR, "ERR")
+        # Orquestar escritura: dict ordenado -> io.excel
+        workbook_sheets = {
+            SHEET_NAMES['resumen']: df_resumen,
+            SHEET_NAMES['por_equipo']: df_kpi,
+            SHEET_NAMES['trip_data']: df_processed_formatted,
+            SHEET_NAMES['cambios']: df_changes,
+            SHEET_NAMES['por_operacion']: df_opcedula,
+            SHEET_NAMES['objetivos']: df_objectives,
+            SHEET_NAMES['promedio']: df_promedio,
+            SHEET_NAMES['audit']: df_cedulas_audit,
+        }
+        full_path = excel_io.write_workbook(workbook_sheets, output_path, self.log)
+        if full_path is None:
             return None
 
-    def _format_excel_columns(self, writer):
-        """Formatear columnas de Excel de manera eficiente."""
-        try:
-            for sheet_name in list(SHEET_NAMES.values()):
-                if sheet_name in writer.sheets:
-                    worksheet = writer.sheets[sheet_name]
-                    for column in worksheet.columns:
-                        max_length = min(max(len(str(cell.value or '')) for cell in column) + 2, 50)
-                        worksheet.column_dimensions[column[0].column_letter].width = max_length
-        except Exception:
-            pass
+        # Subida automatica a Google Sheets (con Resumen incluido)
+        if upload_sheets:
+            self.upload_to_sheets(
+                df_resumen, df_kpi, df_processed_formatted, df_changes, df_opcedula,
+                df_objectives if df_objectives is not None else pd.DataFrame(),
+                df_promedio if df_promedio is not None else pd.DataFrame(),
+            )
+
+        return str(full_path)
     
     @staticmethod
     def _linear_project(daily_values: np.ndarray, km_actual: float,
