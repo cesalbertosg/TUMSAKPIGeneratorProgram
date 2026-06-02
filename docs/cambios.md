@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.4.3 — 2026-06-02 (Refactor I/O + tests + tema GUI)
+
+Trabajo de saneamiento sin cambios funcionales. Tres paquetes:
+
+### Paquete 1 — Cobertura unit de logica critica
+
+Red de seguridad antes del refactor de I/O. 26 tests nuevos en `tests/unit/`:
+
+- `test_cedula_filename.py` (7) — parser de filename `Cedula DDMMYYYY.xlsx`: formato
+  canonico, tilde, mayusculas, separadores con espacios, fechas invalidas, sin
+  patron, extension `.xls` legacy.
+- `test_comodato.py` (10) — `ComodatoManager._get_operacion_cedula_comodato` con
+  parametrize sobre SPECIAL_CIRCUITS + normalizacion a mayusculas. Integracion
+  ligera de `create_comodatos`: dia faltante genera comodato, phantom unit ignorada,
+  `En Cedula=False` ignorado.
+- `test_change_tracker.py` (9) — `ChangeTracker._detect_unit_changes`: INGRESO al
+  aparecer despues de fecha_min, sin-ingreso si arranca en fecha_min, EGRESO al
+  desaparecer antes de fecha_max, OPERACIONAL detectado, sin cambios si misma
+  OpCedula, circuito DEDICADO usa Tipo de Unidad, propagacion de objetivos,
+  combinacion INGRESO+OPERACIONAL+EGRESO en el mismo rango.
+
+39 tests verdes en total (13 previos + 26 nuevos).
+
+### Paquete 2 — Extraer I/O Excel y Google Sheets
+
+`DataProcessor` deja de tocar filesystem y APIs externas. Baja de **1952 a 1688
+lineas** (-264). La logica de calculo no se toco.
+
+Nuevos modulos:
+
+- `io/excel.py` (212 lineas):
+  - `parse_cedula_filename` — regex DDMMYYYY con `lru_cache`.
+  - `fill_missing_dates` — forward-fill por fecha.
+  - `load_daily_cedulas` — consolida `Cedula DDMMYYYY.xlsx` de una carpeta.
+  - `write_workbook` — ExcelWriter + autoajuste de columnas.
+- `io/sheets.py` (178 lineas):
+  - `load_cedula_from_sheet` — cedula horizontal Sheets → vertical.
+  - `sync_workbook_to_sheets` — sube `dict {tab: df}` con clear+update.
+
+`DataProcessor` preserva la API publica (`load_daily_cedulas`, `load_cedula_from_sheets`,
+`upload_to_sheets`, `save_results`); todos delegan a `io.*`. `save_results` conserva
+la logica de presentacion (drops Tier 1, naming canonico, Resumen ejecutivo) y
+delega la escritura fisica a `io.excel.write_workbook`.
+
+### Paquete 3 — Extraer paleta GUI
+
+`gui/theme.py` independiza la paleta del layout. Soporta switch via env var:
+
+- `DARK_THEME` (paleta actual del KPI Generator).
+- `LIGHT_THEME` (placeholder con schema identico, ajustable cuando se decida la
+  paleta corporativa).
+- `get_theme(name)` con fallback seguro a dark si el nombre no existe.
+
+`Config.GUI_THEME` lee `KPI_GUI_THEME` del env (default `"dark"`). Sin cambios
+visuales — la corrida normal se ve identica.
+
+### Validacion
+
+- 39 tests verdes despues de cada paso del refactor.
+- Imports verificados: CLI, GUI y `DataProcessor` instancian sin error.
+- API publica del processor preservada (mismos metodos).
+
+---
+
 ## 0.4.2 — 2026-05-25 (Fix: Cuenta remolques con prorrateo)
 
 ### Bug
