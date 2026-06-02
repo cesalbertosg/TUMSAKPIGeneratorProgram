@@ -14,6 +14,7 @@ from typing import Optional
 
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.processor import DataProcessor
+from kpi_generator.gui.theme import get_theme
 from kpi_generator.gui.widgets import ScrollableFrame
 
 class KPIGeneratorGUI:
@@ -40,20 +41,9 @@ class KPIGeneratorGUI:
         self.setup_ui()
     
     def setup_professional_theme(self):
-        """Configurar tema visual."""
-        self.colors = {
-            'bg_primary': '#1a1d29',
-            'bg_secondary': '#252836',
-            'bg_card': '#2d3142',
-            'accent_primary': '#6366f1',
-            'accent_secondary': '#ec4899',
-            'accent_success': '#10b981',
-            'accent_info': '#06b6d4',
-            'text_primary': '#ffffff',
-            'text_secondary': '#9ca3af',
-            'border': '#374151'
-        }
-        
+        """Configurar tema visual (paleta determinada por Config.GUI_THEME)."""
+        self.colors = get_theme(Config.GUI_THEME)
+
         self.root.configure(bg=self.colors['bg_primary'])
         
         style = ttk.Style()

@@ -71,6 +71,11 @@ class Config:
     FALLBACK_ON_DB_ERROR = os.getenv("FALLBACK_ON_DB_ERROR", "false").lower() == "true"
     FALLBACK_CEDULAS_PATH = _project_root() / os.getenv("FALLBACK_CEDULAS_PATH", "data-input/Cedulas")
 
+    # --- GUI ---
+    # Paleta de colores: "dark" (default) | "light". Ver `gui/theme.py` para
+    # registrar paletas nuevas. Si el nombre no existe, cae a "dark".
+    GUI_THEME = os.getenv("KPI_GUI_THEME", "dark").lower()
+
     # --- Conexión PostgreSQL Cédula DG ---
     PG_CEDULA_HOST = os.getenv("PG_CEDULA_HOST", "172.17.1.4")
     PG_CEDULA_PORT = int(os.getenv("PG_CEDULA_PORT", "5432"))
