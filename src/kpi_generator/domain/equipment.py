@@ -86,6 +86,19 @@ def categoria_status(estatus: str) -> str:
 
 # ---------- Contrato de salida ----------
 
+# Columnas numericas del schema (se inicializan a 0 si faltan; el resto a '').
+_NUMERIC_EQUIPO_COLS = frozenset({
+    'Dias Asignado', 'Dias Sin Asignacion',
+    'Dias Operando', 'Dias Disponible', 'Dias Sin Operador', 'Dias Taller',
+    'Dias Gestoria', 'Dias Descanso', 'Dias Rescate', 'Dias Puesto A Punto',
+    'Dias Otros Status', 'Dias Activo',
+    'KM Cargado', 'KM Vacio', 'KM Total', 'Diesel LTS', 'Rendimiento',
+    'Viajes', 'Densidad Viaje',
+    'Objetivo KM Total', 'Objetivo Viajes Total',
+    'Cump KM %', 'Cump Viajes %', '% Operativo',
+    'Tendencia KM', 'Tendencia Viajes',
+})
+
 # Columnas del DataFrame que produce `EquipmentAggregator.aggregate()`.
 # El orden aqui es el orden final en la hoja Excel.
 EQUIPO_OUTPUT_COLS = [
@@ -215,9 +228,7 @@ class EquipmentAggregator:
         # Asegura el orden y la presencia de todas las columnas del contrato
         for col in EQUIPO_OUTPUT_COLS:
             if col not in df.columns:
-                df[col] = 0 if col.startswith(('Dias ', 'KM ', 'Viajes', 'Objetivo', 'Cump',
-                                                'Densidad', 'Rendimiento', 'Tendencia',
-                                                '% ')) else ''
+                df[col] = 0 if col in _NUMERIC_EQUIPO_COLS else ''
         df = df[EQUIPO_OUTPUT_COLS]
         self.log(f'[EQ] Por Equipo: {len(df)} filas '
                  f'({(df["Tipo Equipo"] == "Motriz").sum()} motrices, '
