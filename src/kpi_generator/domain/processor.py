@@ -20,6 +20,9 @@ import pandas as pd
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.change_tracker import ChangeTracker
 from kpi_generator.domain.comodato import ComodatoManager
+from kpi_generator.domain.equipment import EquipmentAggregator
+from kpi_generator.domain.opcedula import OpcedulaAggregator, post_calcular_tendencia
+from kpi_generator.domain.period import PeriodContext
 from kpi_generator.io import excel as excel_io
 from kpi_generator.io import sheets as sheets_io
 
@@ -1475,12 +1478,11 @@ class DataProcessor:
         return df
 
     def _build_resumen_ejecutivo(self, df_opcedula: pd.DataFrame) -> pd.DataFrame:
-        """Construye la hoja Resumen agregando df_opcedula por Gerencia + fila TOTAL.
+        """Construye la hoja Resumen agregando df_opcedula por Gerencia + TOTAL.
 
-        Una fila por gerencia con totales de unidades por estatus, KM, viajes, diesel,
-        y cumplimientos ponderados. Última fila = TOTAL TUMSA.
-
-        Sin lógica de cálculo nueva — solo sumas/promedios ponderados sobre Por Operación.
+        Schema v0.5.0: una fila por gerencia con conteos de unidades por status,
+        Dias unidad activos/asignados, KM/Viajes/Diesel, cumplimientos ponderados
+        y % Operativo. Ultima fila = TOTAL TUMSA.
         """
         if df_opcedula is None or df_opcedula.empty:
             self.log("Sin datos de OpCedula para Resumen", code="RESUMEN")
@@ -1488,16 +1490,24 @@ class DataProcessor:
 
         df = df_opcedula.copy()
 
-        # Columnas que deben existir; usamos defaults si alguna falta
+        # Mapa src_col -> out_col. Sumamos todas las columnas que se acumulan
+        # de forma trivial; cumplimientos y rendimiento se recalculan al final.
         num_cols_sum = {
             'Motrices Titulares': 'Unidades Activas',
             'Operando': 'Operando',
+            'Disponible': 'Disponible',
+            'Sin Operador': 'Sin Operador',
             'Taller': 'Taller',
-            'Gestoria': 'Gestoría',
-            'Sin Op': 'Sin Op',
+            'Gestoria': 'Gestoria',
+            'Descanso': 'Descanso',
+            'Rescate': 'Rescate',
+            'Puesto A Punto': 'Puesto A Punto',
+            'Otros Status': 'Otros Status',
+            'Dias unidad asignados': 'Dias unidad asignados',
+            'Dias unidad activos': 'Dias unidad activos',
             'KM Total': 'KM Total',
             'Viajes': 'Viajes',
-            'Diesel': 'Diesel LTS',
+            'Diesel LTS': 'Diesel LTS',
             'Objetivo KM': 'Objetivo KM',
             'Objetivo Viajes': 'Objetivo Viajes',
         }
@@ -1509,30 +1519,40 @@ class DataProcessor:
             **{out: (src, 'sum') for src, out in num_cols_sum.items()}
         ).reset_index()
 
-        # Métricas derivadas (cumplimientos y rendimiento ponderados)
-        grouped['Rendimiento'] = (grouped['KM Total'] / grouped['Diesel LTS']
-                                    ).where(grouped['Diesel LTS'] > 0, 0).round(2)
-        grouped['Cumplimiento KM %'] = (grouped['KM Total'] / grouped['Objetivo KM'] * 100
-                                          ).where(grouped['Objetivo KM'] > 0, 0).round(1)
-        grouped['Cumplimiento Viajes %'] = (grouped['Viajes'] / grouped['Objetivo Viajes'] * 100
-                                              ).where(grouped['Objetivo Viajes'] > 0, 0).round(1)
+        # Metricas derivadas (recalculadas, no promediadas)
+        grouped['Rendimiento'] = (
+            grouped['KM Total'] / grouped['Diesel LTS']
+        ).where(grouped['Diesel LTS'] > 0, 0).round(2)
+        grouped['Cumplimiento KM %'] = (
+            grouped['KM Total'] / grouped['Objetivo KM'] * 100
+        ).where(grouped['Objetivo KM'] > 0, 0).round(1)
+        grouped['Cumplimiento Viajes %'] = (
+            grouped['Viajes'] / grouped['Objetivo Viajes'] * 100
+        ).where(grouped['Objetivo Viajes'] > 0, 0).round(1)
+        grouped['% Operativo'] = (
+            grouped['Dias unidad activos'] / grouped['Dias unidad asignados'] * 100
+        ).where(grouped['Dias unidad asignados'] > 0, 0).round(1)
 
-        # Nota: la categoría 'Disponible' del Excel legacy no existe como columna
-        # separada en Por Operación (la BD agrupa Disponible y Descanso dentro de
-        # 'Operando'). Por eso el Resumen no la incluye — sería siempre 0.
-
-        # Reordenar y agregar fila TOTAL
-        cols_out = ['Gerencia', 'Unidades Activas', 'Operando', 'Taller',
-                    'Gestoría', 'Sin Op', 'KM Total', 'Viajes', 'Diesel LTS',
-                    'Rendimiento', 'Objetivo KM', 'Objetivo Viajes',
-                    'Cumplimiento KM %', 'Cumplimiento Viajes %']
+        cols_out = [
+            'Gerencia', 'Unidades Activas',
+            'Operando', 'Disponible', 'Sin Operador', 'Taller', 'Gestoria',
+            'Descanso', 'Rescate', 'Puesto A Punto', 'Otros Status',
+            'Dias unidad asignados', 'Dias unidad activos', '% Operativo',
+            'KM Total', 'Viajes', 'Diesel LTS', 'Rendimiento',
+            'Objetivo KM', 'Objetivo Viajes',
+            'Cumplimiento KM %', 'Cumplimiento Viajes %',
+        ]
         grouped = grouped[cols_out]
 
         total = grouped.drop(columns='Gerencia').sum(numeric_only=True)
-        # Rendimiento y cumplimientos del total se recalculan (no se promedian)
-        total['Rendimiento'] = round(total['KM Total'] / total['Diesel LTS'], 2) if total['Diesel LTS'] > 0 else 0
-        total['Cumplimiento KM %'] = round(total['KM Total'] / total['Objetivo KM'] * 100, 1) if total['Objetivo KM'] > 0 else 0
-        total['Cumplimiento Viajes %'] = round(total['Viajes'] / total['Objetivo Viajes'] * 100, 1) if total['Objetivo Viajes'] > 0 else 0
+        total['Rendimiento'] = round(total['KM Total'] / total['Diesel LTS'], 2) \
+            if total['Diesel LTS'] > 0 else 0
+        total['Cumplimiento KM %'] = round(total['KM Total'] / total['Objetivo KM'] * 100, 1) \
+            if total['Objetivo KM'] > 0 else 0
+        total['Cumplimiento Viajes %'] = round(total['Viajes'] / total['Objetivo Viajes'] * 100, 1) \
+            if total['Objetivo Viajes'] > 0 else 0
+        total['% Operativo'] = round(total['Dias unidad activos'] / total['Dias unidad asignados'] * 100, 1) \
+            if total['Dias unidad asignados'] > 0 else 0
         total_row = pd.DataFrame([{'Gerencia': 'TOTAL TUMSA', **total.to_dict()}])
 
         resumen = pd.concat([grouped, total_row], ignore_index=True)
@@ -1622,7 +1642,17 @@ class DataProcessor:
     def generate_report(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                         output_path: str, objectives_file: str = None,
                         cedulas_source: str = None) -> Optional[str]:
-        """Ejecutar proceso completo optimizado con comodatos, cambios y OpCedula.
+        """Pipeline v0.5.0: aggregators puros sobre PeriodContext.
+
+        Flujo:
+            load_data -> PeriodContext.from_trips -> obj_mapping
+            -> process_trips_optimized (integra comodatos, asigna OpCedula a viajes)
+            -> EquipmentAggregator (Por Equipo: 1 fila por equipo unico)
+            -> OpcedulaAggregator (Por Operacion: 1 fila por OpCedula vigente)
+            -> post_calcular_tendencia (rellena Tendencia KM/Viajes)
+            -> ChangeTracker (Resumen de Cambios)
+            -> _build_promedio_km_sheet (Promedio KM por Unidad)
+            -> save_results (Excel + Sheets)
 
         `cedulas_source`: "db" | "excel" | "sheets" | None (usa Config.CEDULAS_SOURCE).
         """
@@ -1633,46 +1663,69 @@ class DataProcessor:
                                   cedulas_source=cedulas_source)
             if not data:
                 return None
-            
-            analysis_date = datetime.now()
-            if not data['trips'].empty and 'Fecha creación' in data['trips'].columns:
-                trip_dates = pd.to_datetime(data['trips']['Fecha creación'], errors='coerce').dropna()
-                if not trip_dates.empty:
-                    analysis_date = trip_dates.max()
-            
+
+            # Contexto temporal: un solo mes derivado de las fechas de viajes
+            period = PeriodContext.from_trips(data['trips'])
+            self.log(f"Periodo: {period.anio}-{period.mes:02d}, "
+                     f"dias_mes={period.dias_mes}, "
+                     f"dias_corrientes={period.dias_corrientes}, "
+                     f"dias_restantes={period.dias_restantes}",
+                     code="PER")
+
+            # analysis_date legacy (la siguen usando create_unit_mapping y process_objectives)
+            analysis_date = period.fecha_corte.to_pydatetime()
+
             unit_mapping = self.create_unit_mapping(data['cedulas'], analysis_date)
-            
+
             obj_mapping = None
             if data['objectives'] is not None:
-                obj_mapping = self.process_objectives(data['objectives'], unit_mapping, analysis_date)
-            
-            df_processed = self.process_trips_optimized(data['trips'], data['cedulas'], data['fuel'], obj_mapping)
-            # A: Columnas extra para Looker Studio (antes en Sheets)
+                obj_mapping = self.process_objectives(
+                    data['objectives'], unit_mapping, analysis_date
+                )
+
+            # Procesa viajes (integra comodatos + asigna OpCedula a cada fila)
+            df_processed = self.process_trips_optimized(
+                data['trips'], data['cedulas'], data['fuel'], obj_mapping
+            )
             df_processed = self._add_trip_extra_columns(df_processed, data['cedulas'])
-            # Tendencia KM aditiva por fila (como Objetivo KM Total)
-            df_processed = self._add_tendencia_complement_to_trips(df_processed)
-            df_kpi = self.create_kpi_summary_optimized(df_processed, data['cedulas'], unit_mapping, obj_mapping, analysis_date)
-            df_kpi = self.add_trailer_equipment_optimized(df_kpi, df_processed)
-            df_final = self.finalize_output(df_kpi)
 
-            df_changes = self.change_tracker.track_operation_changes(data['cedulas'], obj_mapping)
+            # --- v0.5.0: aggregators puros ---
+            equipment_agg = EquipmentAggregator(
+                df_cedulas=data['cedulas'],
+                df_trips=df_processed,
+                obj_mapping=obj_mapping,
+                period=period,
+                special_circuits=Config.SPECIAL_CIRCUITS,
+                log_callback=self.log_func,
+            )
+            df_kpi = equipment_agg.aggregate()
 
-            df_opcedula = self.create_opcedula_summary(df_processed, data['cedulas'], obj_mapping)
+            opcedula_agg = OpcedulaAggregator(
+                df_equipos=df_kpi, obj_mapping=obj_mapping, period=period,
+                log_callback=self.log_func,
+            )
+            df_opcedula = opcedula_agg.aggregate()
 
-            # Denormalizar KPIs de período y OpCedula a cada fila de Viajes (multi-filtro Looker)
-            df_processed = self._denormalize_kpis_to_trips(df_processed, df_final, df_opcedula)
+            # Segundo pase: rellena Tendencia KM/Viajes (in-place en ambos)
+            post_calcular_tendencia(df_kpi, df_opcedula, period)
 
-            # A: Tabla PromedioKMunitOps
-            max_date = df_processed['Fecha creación'].max()
-            days_elapsed = max_date.day
-            df_promedio = self._build_promedio_km_sheet(df_opcedula, days_elapsed)
+            df_changes = self.change_tracker.track_operation_changes(
+                data['cedulas'], obj_mapping
+            )
+
+            # Denormaliza KPIs de equipo y OpCedula a cada fila de Viajes (fuente Looker)
+            df_processed = self._denormalize_kpis_to_trips_v050(
+                df_processed, df_kpi, df_opcedula
+            )
+
+            df_promedio = self._build_promedio_km_sheet_v050(df_opcedula, df_kpi)
 
             result_path = self.save_results(
-                df_final, df_processed, df_changes, df_opcedula, output_path,
+                df_kpi, df_processed, df_changes, df_opcedula, output_path,
                 df_objectives=data['objectives'],
                 df_promedio=df_promedio,
                 df_cedulas_audit=data.get('cedulas_audit'),
-                upload_sheets=True
+                upload_sheets=True,
             )
 
             if result_path:
@@ -1681,8 +1734,97 @@ class DataProcessor:
                 self.log("=== PROCESO CON ERRORES ===", code="ERR")
 
             return result_path
-            
+
         except Exception as e:
             self.log(f"Error crítico: {e}", LogLevel.ERROR, "CRIT")
             return None
+
+    # ------------------------------------------------------------------
+    # v0.5.0 helpers (reemplazo de _denormalize_kpis_to_trips y _build_promedio_km_sheet)
+    # ------------------------------------------------------------------
+
+    def _denormalize_kpis_to_trips_v050(self, df_trips: pd.DataFrame,
+                                         df_kpi: pd.DataFrame,
+                                         df_opcedula: pd.DataFrame) -> pd.DataFrame:
+        """Anade columnas de equipo y OpCedula a cada fila de Viajes.
+
+        Sin logica de periodos: cada equipo tiene 1 fila en df_kpi, asi que el
+        join es directo por `Equipo Motriz`. Para OpCedula se hace por
+        `Operación cedula` (nombre interno) <-> `Operacion Cedula` (nuevo schema).
+        """
+        df = df_trips.copy()
+
+        # --- Equipo motriz: % Operativo, Tendencia, Cumplimientos ---
+        if not df_kpi.empty:
+            eq_cols = ['Equipo Motriz', '% Operativo', 'Tendencia KM', 'Tendencia Viajes',
+                       'Cump KM %', 'Cump Viajes %', 'Densidad Viaje']
+            eq_subset = df_kpi[[c for c in eq_cols if c in df_kpi.columns]].copy()
+            eq_subset = eq_subset.rename(columns={
+                'Cump KM %': 'Cump KM Equipo %',
+                'Cump Viajes %': 'Cump Viajes Equipo %',
+                'Tendencia KM': 'Tendencia KM Equipo',
+                'Tendencia Viajes': 'Tendencia Viajes Equipo',
+            })
+            df['Equipo Motriz'] = df['Equipo Motriz'].astype(str)
+            eq_subset['Equipo Motriz'] = eq_subset['Equipo Motriz'].astype(str)
+            df = df.merge(eq_subset, on='Equipo Motriz', how='left')
+
+        # --- OpCedula: Motrices, Objetivos consolidados, Cumplimiento, Promedio ---
+        if not df_opcedula.empty and 'Operación cedula' in df.columns:
+            op_cols = ['Operacion Cedula', 'Motrices Titulares', 'Objetivo KM',
+                       'Objetivo Viajes', 'Cumplimiento KM %', 'Cumplimiento Viajes %',
+                       'Promedio KM dia unidad', 'Tendencia KM', 'Tendencia Viajes']
+            op_subset = df_opcedula[[c for c in op_cols if c in df_opcedula.columns]].copy()
+            op_subset = op_subset.rename(columns={
+                'Operacion Cedula': '__opcedula_join',
+                'Tendencia KM': 'Tendencia KM OpCed',
+                'Tendencia Viajes': 'Tendencia Viajes OpCed',
+                'Cumplimiento KM %': 'Cumplimiento KM OpCed %',
+                'Cumplimiento Viajes %': 'Cumplimiento Viajes OpCed %',
+                'Objetivo KM': 'Objetivo KM OpCed',
+                'Objetivo Viajes': 'Objetivo Viajes OpCed',
+            })
+            df['__opcedula_join'] = df['Operación cedula'].astype(str)
+            op_subset['__opcedula_join'] = op_subset['__opcedula_join'].astype(str)
+            df = df.merge(op_subset, on='__opcedula_join', how='left')
+            df = df.drop(columns=['__opcedula_join'])
+
+        # Numericas faltantes -> 0
+        for col in df.columns:
+            if df[col].dtype.kind in {'f', 'i'} and df[col].isna().any():
+                df[col] = df[col].fillna(0)
+
+        self.log(f"Viajes enriquecido: {len(df.columns)} cols, {len(df)} filas",
+                 code="DENORM")
+        return df
+
+    def _build_promedio_km_sheet_v050(self, df_opcedula: pd.DataFrame,
+                                       df_kpi: pd.DataFrame) -> pd.DataFrame:
+        """Hoja `Promedio KM por Unidad`: 1 fila por OpCedula vigente.
+
+        Columnas: Operacion Cedula, Gerencia, Motrices Titulares,
+        Remolques Unicos (count arrastres con esta OpCedula vigente),
+        Promedio Diario KM/U (KM Total / dias unidad asignados).
+        """
+        if df_opcedula.empty:
+            return pd.DataFrame()
+
+        # Contar arrastres por OpCedula vigente
+        if not df_kpi.empty:
+            arrastres = df_kpi[df_kpi['Tipo Equipo'] != 'Motriz']
+            remolques_por_op = arrastres.groupby('Operacion Cedula').size().to_dict()
+        else:
+            remolques_por_op = {}
+
+        rows = []
+        for _, r in df_opcedula.iterrows():
+            opcedula = r.get('Operacion Cedula', '')
+            rows.append({
+                'Operacion Cedula': opcedula,
+                'Gerencia': r.get('Gerencia', ''),
+                'Motrices': int(r.get('Motrices Titulares', 0)),
+                'Remolques Unicos': int(remolques_por_op.get(opcedula, 0)),
+                'Promedio Diario KM/U': r.get('Promedio KM dia unidad', 0),
+            })
+        return pd.DataFrame(rows)
 
