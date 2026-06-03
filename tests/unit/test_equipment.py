@@ -1,0 +1,357 @@
+"""Tests para `domain.equipment.EquipmentAggregator` y helpers.
+
+Cubre las reglas clave de v0.5.0:
+- Clasificacion Motriz/Remolque/Dolly desde Tipo de Unidad BD.
+- Mapeo de status BD a categorias canonicas (incluye Otros Status resiliente).
+- Asignacion vigente motriz (ultimo dia, egreso, nunca asignado).
+- Motriz dominante para arrastres (mayor numero de co-viajes).
+- Conteo de dias: ejes 1+2+3 (Asignado, sub-status, Activo).
+- Objetivo prorrateado por dia asignado (sin importar status).
+- Arrastres: status reconstruido desde viajes.
+"""
+
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from kpi_generator.domain.equipment import (
+    EQUIPO_OUTPUT_COLS,
+    EquipmentAggregator,
+    categoria_status,
+    clasificar_tipo_equipo,
+)
+from kpi_generator.domain.period import PeriodContext
+
+
+SPECIAL_CIRCUITS = {'DEDICADO', 'POR ASIGNAR', 'SPRINTER', 'TERCERO', 'VENTA'}
+
+
+# ---------- Helpers ----------
+
+def _ced(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula_dt'])
+    return df
+
+
+def _trips(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if not df.empty and 'Fecha creación' in df.columns:
+        df['Fecha creación'] = pd.to_datetime(df['Fecha creación'])
+        df['Fecha creación_date'] = df['Fecha creación'].dt.date
+    return df
+
+
+def _period(corte: str = '2026-06-05') -> PeriodContext:
+    """PeriodContext de junio 2026 con corte configurable."""
+    return PeriodContext(anio=2026, mes=6, fecha_ultimo_viaje=pd.Timestamp(corte))
+
+
+def _agg(df_cedulas, df_trips, obj_mapping=None, corte='2026-06-05'):
+    return EquipmentAggregator(
+        df_cedulas=df_cedulas, df_trips=df_trips,
+        obj_mapping=obj_mapping, period=_period(corte),
+        special_circuits=SPECIAL_CIRCUITS,
+        log_callback=lambda *_a, **_k: None,
+    )
+
+
+# ---------- clasificar_tipo_equipo ----------
+
+@pytest.mark.parametrize("tipo_unidad,esperado", [
+    ('SENCILLO', 'Motriz'),
+    ('FULL', 'Motriz'),
+    ('TORTHON RF', 'Motriz'),
+    ('CAMIONETA', 'Motriz'),
+    ('DESCONOCIDO', 'Motriz'),  # default
+    ('', 'Motriz'),              # vacio = Motriz por defecto
+    ('EQUIPO REMOLQUE', 'Remolque'),
+    ('REMOLQUE', 'Remolque'),
+    ('CAJA', 'Remolque'),
+    ('THERMO', 'Remolque'),
+    ('EQUIPO DOLLY', 'Dolly'),
+    ('DOLLY', 'Dolly'),
+])
+def test_clasificar_tipo_equipo(tipo_unidad: str, esperado: str) -> None:
+    assert clasificar_tipo_equipo(tipo_unidad) == esperado
+
+
+# ---------- categoria_status ----------
+
+@pytest.mark.parametrize("estatus,esperado", [
+    ('Operando', 'Operando'),
+    ('Taller', 'Taller'),
+    ('Gestoria', 'Gestoria'),
+    ('Puesto A Punto', 'Puesto A Punto'),
+    ('Sin Asignacion', 'Sin Asignacion'),
+    # Resilientes -> Otros Status
+    ('Activo', 'Otros Status'),
+    ('Baja', 'Otros Status'),
+    ('Inhabilitado', 'Otros Status'),
+    ('Cargada', 'Otros Status'),
+    ('Renovacion Licencia', 'Otros Status'),
+    ('Venta', 'Otros Status'),
+    ('Operador Incapacitado', 'Otros Status'),
+    ('Status Desconocido Futuro', 'Otros Status'),
+    ('', 'Otros Status'),
+    (None, 'Otros Status'),
+])
+def test_categoria_status(estatus: str, esperado: str) -> None:
+    assert categoria_status(estatus or '') == esperado
+
+
+# ---------- Asignacion vigente motriz ----------
+
+def test_asignacion_vigente_ultimo_dia() -> None:
+    """Equipo con cambio Operacion CENTRO -> NORTE: vigente = NORTE."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-05', 'Gerencia': 'MEX',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'NORTE',
+         'Operando': 'Taller'},
+    ])
+    agg = _agg(ced, _trips([]))
+    df = agg.aggregate()
+    fila = df[df['Equipo Motriz'] == 'C070'].iloc[0]
+    assert fila['Operacion'] == 'VEND'
+    assert fila['Circuito'] == 'NORTE'
+    assert fila['Gerencia'] == 'MEX'
+    assert fila['Operacion Cedula'] == 'VEND NORTE'
+    assert fila['Estatus'] == 'Taller'
+
+
+def test_asignacion_vigente_egreso_por_asignar() -> None:
+    """Ultimo dia es 'Sin Asignacion' -> POR ASIGNAR / PENDIENTE."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-05', 'Gerencia': '',
+         'Operación': '', 'Tipo de Unidad': 'FULL', 'Circuito': '',
+         'Operando': 'Sin Asignacion'},
+    ])
+    agg = _agg(ced, _trips([]))
+    fila = agg.aggregate().iloc[0]
+    assert fila['Gerencia'] == 'PENDIENTE'
+    assert fila['Operacion'] == 'POR ASIGNAR'
+    assert fila['Estatus'] == 'Sin Asignacion'
+
+
+def test_phantom_sin_cedula_por_asignar() -> None:
+    """Unidad solo en viajes (nunca en cedula) -> POR ASIGNAR."""
+    trips = _trips([
+        {'Equipo Motriz': 'T999', 'Fecha creación': '2026-06-03', 'Número de Viaje': 1,
+         'KMLiqCargadoFinal': 100, 'KMLiqVacioFinal': 50, 'ClaveCategoria': 'X'},
+    ])
+    agg = _agg(_ced([]), trips)
+    fila = agg.aggregate().iloc[0]
+    assert fila['Equipo Motriz'] == 'T999'
+    assert fila['Tipo Equipo'] == 'Motriz'
+    assert fila['Gerencia'] == 'PENDIENTE'
+    assert fila['Operacion'] == 'POR ASIGNAR'
+    assert fila['Dias Asignado'] == 0
+    assert fila['Dias Sin Asignacion'] == 5  # corte = dia 5
+    assert fila['Dias Activo'] == 1
+
+
+# ---------- Dias por status ----------
+
+def test_conteo_dias_motriz_basico() -> None:
+    """5 dias del periodo: 3 Operando, 1 Taller, 1 sin cedula -> Sin Asignacion."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-02', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-03', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Taller'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-04', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        # Dia 5 sin cedula -> Sin Asignacion
+    ])
+    fila = _agg(ced, _trips([])).aggregate().iloc[0]
+    assert fila['Dias Asignado'] == 4
+    assert fila['Dias Sin Asignacion'] == 1
+    assert fila['Dias Operando'] == 3
+    assert fila['Dias Taller'] == 1
+    assert fila['Dias Otros Status'] == 0
+    # Suma de Eje 1
+    assert fila['Dias Asignado'] + fila['Dias Sin Asignacion'] == 5
+    # Suma de Eje 2 dentro de Asignado
+    eje2 = sum(fila[f'Dias {s}'] for s in
+               ['Operando', 'Disponible', 'Sin Operador', 'Taller', 'Gestoria',
+                'Descanso', 'Rescate', 'Puesto A Punto', 'Otros Status'])
+    assert eje2 == fila['Dias Asignado']
+
+
+def test_status_raro_va_a_otros_status() -> None:
+    """Status BD 'Activo' / 'Baja' / nuevo -> Dias Otros Status, NO se pierde."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Activo'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-02', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Baja'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-03', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'NUEVO STATUS DEL FUTURO'},
+    ])
+    fila = _agg(ced, _trips([]), corte='2026-06-03').aggregate().iloc[0]
+    assert fila['Dias Asignado'] == 3
+    assert fila['Dias Otros Status'] == 3
+    assert fila['Dias Operando'] == 0
+
+
+# ---------- Dias Activo ----------
+
+def test_dias_activo_solo_viajes_validos() -> None:
+    """Dias Activo cuenta dias unicos con viaje no-comodato."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+    ])
+    trips = _trips([
+        {'Equipo Motriz': 'C070', 'Fecha creación': '2026-06-01', 'Número de Viaje': 1,
+         'ClaveCategoria': 'X'},
+        {'Equipo Motriz': 'C070', 'Fecha creación': '2026-06-01', 'Número de Viaje': 2,
+         'ClaveCategoria': 'X'},  # mismo dia -> no duplica
+        {'Equipo Motriz': 'C070', 'Fecha creación': '2026-06-03', 'Número de Viaje': 3,
+         'ClaveCategoria': 'COM'},  # comodato -> NO cuenta
+        {'Equipo Motriz': 'C070', 'Fecha creación': '2026-06-04', 'Número de Viaje': 4,
+         'ClaveCategoria': 'X'},
+    ])
+    fila = _agg(ced, trips).aggregate().iloc[0]
+    assert fila['Dias Activo'] == 2  # 01 y 04 (03 es comodato)
+
+
+def test_porcentaje_operativo() -> None:
+    """% Operativo = Dias Activo / Dias Corrientes * 100."""
+    trips = _trips([
+        {'Equipo Motriz': 'T999', 'Fecha creación': '2026-06-01', 'Número de Viaje': 1,
+         'ClaveCategoria': 'X'},
+        {'Equipo Motriz': 'T999', 'Fecha creación': '2026-06-02', 'Número de Viaje': 2,
+         'ClaveCategoria': 'X'},
+    ])
+    # corte = dia 5 -> Dias corrientes = 5, Dias Activo = 2 -> 40%
+    fila = _agg(_ced([]), trips, corte='2026-06-05').aggregate().iloc[0]
+    assert fila['% Operativo'] == 40.0
+
+
+# ---------- Objetivos prorrateados ----------
+
+def test_objetivo_prorrateado_mezcla_opcedulas() -> None:
+    """Ejemplo de Beto: 2 dias en op-A (100/dia) + 2 dias en op-B (10/dia) -> 220 total."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-02', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Taller'},  # Taller dentro de VEND CENTRO sigue aportando
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-03', 'Gerencia': 'MEX',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'NORTE',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-04', 'Gerencia': 'MEX',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'NORTE',
+         'Operando': 'Operando'},
+    ])
+    obj = {
+        'VEND CENTRO': {'Objetivo KM Diario': 100, 'Objetivo Viajes Diario': 2},
+        'VEND NORTE': {'Objetivo KM Diario': 10, 'Objetivo Viajes Diario': 1},
+    }
+    fila = _agg(ced, _trips([]), obj_mapping=obj, corte='2026-06-04').aggregate().iloc[0]
+    assert fila['Objetivo KM Total'] == 220  # 2*100 + 2*10
+    assert fila['Objetivo Viajes Total'] == 6  # 2*2 + 2*1
+
+
+def test_objetivo_dia_sin_objetivo_aporta_cero() -> None:
+    """OpCedula sin entry en obj_mapping -> 0 aporte (no rompe)."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'NUEVA', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+    ])
+    fila = _agg(ced, _trips([]), obj_mapping={}, corte='2026-06-01').aggregate().iloc[0]
+    assert fila['Objetivo KM Total'] == 0
+    assert fila['Cump KM %'] is None
+
+
+# ---------- Arrastres ----------
+
+def test_arrastre_hereda_motriz_dominante() -> None:
+    """Arrastre 40331 viaja 3 veces con C070 y 1 con C200 -> dominante = C070."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C200', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'MEX',
+         'Operación': 'DIST', 'Tipo de Unidad': 'TORTHON', 'Circuito': 'NORTE',
+         'Operando': 'Operando'},
+    ])
+    trips = _trips([
+        {'Equipo Motriz': 'C070', 'Equipo Remolque 1': '40331',
+         'Fecha creación': '2026-06-01', 'Número de Viaje': 1, 'ClaveCategoria': 'X'},
+        {'Equipo Motriz': 'C070', 'Equipo Remolque 1': '40331',
+         'Fecha creación': '2026-06-02', 'Número de Viaje': 2, 'ClaveCategoria': 'X'},
+        {'Equipo Motriz': 'C070', 'Equipo Remolque 1': '40331',
+         'Fecha creación': '2026-06-03', 'Número de Viaje': 3, 'ClaveCategoria': 'X'},
+        {'Equipo Motriz': 'C200', 'Equipo Remolque 1': '40331',
+         'Fecha creación': '2026-06-04', 'Número de Viaje': 4, 'ClaveCategoria': 'X'},
+    ])
+    df = _agg(ced, trips, corte='2026-06-04').aggregate()
+    fila = df[df['Equipo Motriz'] == '40331'].iloc[0]
+    assert fila['Tipo Equipo'] == 'Remolque'  # heuristica: aparece solo en Eq Remolque 1
+    assert fila['Operacion'] == 'VEND'  # heredo de C070
+    assert fila['Circuito'] == 'CENTRO'
+    assert fila['Dias Activo'] == 4  # viajo en 4 dias
+
+
+def test_arrastre_estatus_reconstruido() -> None:
+    """Arrastre tiene Operando = dias con viaje, Disponible = Asignado - Activo."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-02', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-03', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+    ])
+    trips = _trips([
+        {'Equipo Motriz': 'C070', 'Equipo Remolque 1': '40331',
+         'Fecha creación': '2026-06-01', 'Número de Viaje': 1, 'ClaveCategoria': 'X'},
+        # 02 y 03 sin viaje del remolque
+    ])
+    df = _agg(ced, trips, corte='2026-06-03').aggregate()
+    fila = df[df['Equipo Motriz'] == '40331'].iloc[0]
+    assert fila['Dias Asignado'] == 3  # hereda de C070
+    assert fila['Dias Activo'] == 1
+    assert fila['Dias Operando'] == 1  # solo el dia con viaje
+    assert fila['Dias Disponible'] == 2  # asignado - activo
+    assert fila['Dias Taller'] == 0  # NO hereda taller del motriz
+
+
+# ---------- Schema ----------
+
+def test_schema_de_salida_completo() -> None:
+    """El DataFrame siempre devuelve EQUIPO_OUTPUT_COLS en el orden correcto."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+    ])
+    df = _agg(ced, _trips([]), corte='2026-06-01').aggregate()
+    assert list(df.columns) == EQUIPO_OUTPUT_COLS
+    assert len(df) == 1
