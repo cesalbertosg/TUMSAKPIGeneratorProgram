@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kpi-generator"
-version = "0.4.3"
+version = "0.5.0.dev0"
 description = "Generador de KPIs de flota TUMSA: procesa viajes, combustible y cédulas; sincroniza con Google Sheets."
 readme = "README.md"
 requires-python = ">=3.12"
