@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.5.0 — 2026-06-04 (Reforma de output: 1 fila por equipo, dias asignado/activo)
+
+Cambio mayor en la semantica de las tres hojas principales: **rompe contratos
+con dashboards Looker existentes**. Migracion documentada en `v0.5.0-design.md`.
+
+### Que cambia conceptualmente
+
+- **Por Equipo** ya no es 1 fila por periodo de asignacion estable; ahora es
+  **1 fila por equipo unico del periodo** (motrices + arrastres en la misma
+  hoja, columna `Tipo Equipo`).
+- **Asignacion vigente** = foto del ultimo dia del periodo. Equipos egresados
+  o nunca asignados se reportan como `PENDIENTE` / `POR ASIGNAR`.
+- **Arrastres** heredan asignacion del motriz dominante (mas co-viajes); su
+  status se reconstruye como `Operando = dias con viaje`, `Disponible = resto`.
+- **Dos clasificaciones de dias** que conviven:
+  - Eje 1: `Dias Asignado + Dias Sin Asignacion = Dias corrientes`.
+  - Eje 2: 8 sub-status canonicos (Operando, Disponible, Sin Operador, Taller,
+    Gestoria, Descanso, Rescate, Puesto A Punto) + `Dias Otros Status`
+    (resiliente: agrupa Activo/Baja/Inhabilitado/Cargada/Renovacion Licencia/
+    Operador Incapacitado/Venta y cualquier status BD desconocido).
+  - Eje 3: `Dias Activo` = dias con ≥1 viaje no comodato (transversal).
+- **Objetivo Total** = Σ `Objetivo KM Diario` por dia asignado, sin importar
+  el status (un dia en Taller dentro de VEND CENTRO sigue aportando objetivo).
+- **% Operativo** = `Dias Activo / Dias corrientes × 100`.
+- **Tendencia KM** = `KM Real + Dias restantes mes × Promedio KM/dia/unidad
+  OpCedula × % Operativo / 100`, donde el promedio se calcula sobre TODAS las
+  unidades-dia de la OpCedula en el mes actual.
+
+### Que cambia en codigo
+
+Nuevos modulos:
+
+- `domain/period.py` — `PeriodContext.from_trips(df_trips)`: variables
+  temporales (`dias_mes`, `dias_corrientes`, `dias_restantes`). Una unica
+  fuente para todo el pipeline. Pre-condicion: zmov cubre un solo mes.
+- `domain/equipment.py` — `EquipmentAggregator.aggregate()`: 1 fila por
+  equipo unico. Catalogos `REMOLQUE_TIPOS`/`DOLLY_TIPOS` para clasificar
+  Tipo Equipo desde `Tipo de Unidad` BD. Mapeo `categoria_status()` que
+  preserva data nueva en `Dias Otros Status`.
+- `domain/opcedula.py` — `OpcedulaAggregator.aggregate()`: 1 fila por
+  OpCedula vigente (excluye `POR ASIGNAR*`). `post_calcular_tendencia()`:
+  segundo pase que rellena `Tendencia KM/Viajes` en df_equipos y df_opcedula
+  usando los promedios de cada OpCedula.
+
+`processor.py` baja de **1688 → 1049 lineas (-639)**. Se borraron 14
+funciones legacy del motor viejo: `create_periods`, `create_kpi_summary_optimized`,
+`_create_phantom_kpis`, `_get_denominacion_*`, `_add_metrics_optimized`,
+`_calculate_compliance_optimized`, `add_trailer_equipment_optimized`,
+`_create_trailer_record`, `create_opcedula_summary`, `finalize_output`,
+`_add_tendencia_complement_to_trips`, `_denormalize_kpis_to_trips` viejo,
+`_build_promedio_km_sheet` viejo.
+
+### Columnas eliminadas (vs v0.4.x)
+
+En Por Equipo:
+- `Fecha Inicio`, `Fecha Fin`, `Días Periodo` (ya no hay periodos).
+- `Fecha Ultima modif` (duplica info del filename).
+- `Denominación del equipo`, `Tipo de equipo` (sustituido por `Tipo Equipo`
+  con valores `Motriz`/`Remolque`/`Dolly`).
+
+En Por Operacion:
+- `Sin Op` se renombra a `Sin Operador` (alinear con status canonico).
+- `Diesel` se renombra a `Diesel LTS` (consistencia).
+- Se agregan `Dias unidad asignados`, `Dias unidad activos`,
+  `Promedio KM dia unidad`, `Promedio Viajes dia unidad`, `Tendencia Viajes`.
+
+### Fix asociado (incluido en v0.5.0)
+
+- KM Total ahora usa la columna `KM_total` ya calculada por
+  `process_trips_optimized` (que aplica el fallback `KMLiqCargadoFinal → Distancia`
+  cuando `StatusViaje='A'`, i.e. viaje no liquidado). Antes se sumaba
+  `KMLiqCargadoFinal` directo, que valia 0 hasta la liquidacion.
+  Impacto E2E (3 dias 01-03/06/2026): KM TOTAL TUMSA 341,426 → 535,001
+  (+193,575), Cumplimiento KM TOTAL 71.4% → 111.9%.
+
+### Tests
+
+- 25 tests unit nuevos: PeriodContext (15) + OpcedulaAggregator (10).
+- 39 tests para EquipmentAggregator (incluye 24 parametrize de
+  clasificacion + mapeo de status, asignacion vigente con egreso/phantom,
+  conteo de dias por las 3 clasificaciones, objetivos prorrateados,
+  arrastres con motriz dominante).
+- Total: 103 tests verdes (39 previos + 64 nuevos).
+
+### Migracion Looker (lado usuario)
+
+Reportes que usen las hojas afectadas deben re-conectar la fuente y
+remapear campos. Ver `docs/migracion-looker-v0.5.0.md`.
+
+---
+
 ## 0.4.3 — 2026-06-02 (Refactor I/O + tests + tema GUI)
 
 Trabajo de saneamiento sin cambios funcionales. Tres paquetes:
