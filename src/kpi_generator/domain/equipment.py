@@ -508,14 +508,28 @@ class EquipmentAggregator:
         return len(fechas)
 
     def _metricas_operativas(self, viajes: pd.DataFrame) -> Dict[str, float]:
-        """Suma KM/Diesel/Viajes excluyendo comodatos."""
+        """Suma KM/Diesel/Viajes excluyendo comodatos.
+
+        Usa las columnas YA CALCULADAS por `process_trips_optimized`:
+        - `KM_cargado` = KMLiqCargadoFinal si StatusViaje != 'A', sino Distancia.
+          (KMLiqCargadoFinal es 0 hasta que el viaje se liquida; mientras tanto
+          Distancia es el km cargado real reportado.)
+        - `KM_vacio` = KMLiqVacioFinal.
+        - `KM_total` = KM_cargado + KM_vacio.
+
+        Las columnas crudas (`KMLiqCargadoFinal`, `KMLiqVacioFinal`) NO se usan
+        directamente — darian 0 en viajes sin liquidar.
+        """
         if viajes.empty:
             return {'KM Cargado': 0.0, 'KM Vacio': 0.0, 'KM Total': 0.0,
                     'Diesel LTS': 0.0, 'Rendimiento': 0.0,
                     'Viajes': 0, 'Densidad Viaje': 0.0}
-        km_cargado = viajes.get('KMLiqCargadoFinal', pd.Series(dtype=float)).fillna(0).sum()
-        km_vacio = viajes.get('KMLiqVacioFinal', pd.Series(dtype=float)).fillna(0).sum()
-        km_total = km_cargado + km_vacio
+        km_cargado = viajes.get('KM_cargado', pd.Series(dtype=float)).fillna(0).sum()
+        km_vacio = viajes.get('KM_vacio', pd.Series(dtype=float)).fillna(0).sum()
+        km_total = viajes.get('KM_total', pd.Series(dtype=float)).fillna(0).sum()
+        # Si por alguna razon KM_total no esta calculado, lo derivamos
+        if km_total == 0 and (km_cargado > 0 or km_vacio > 0):
+            km_total = km_cargado + km_vacio
         diesel = viajes.get('Diesel_LTS', pd.Series(dtype=float)).fillna(0).sum()
         n_viajes = len(viajes)
         rendimiento = km_total / diesel if diesel > 0 else 0.0
