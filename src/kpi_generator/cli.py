@@ -52,6 +52,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Nivel de logging (default: INFO).",
     )
+    run.add_argument(
+        "--no-upload-sheets",
+        action="store_true",
+        help="Genera el Excel pero NO sincroniza a Google Sheets. Por default sí sube.",
+    )
 
     diff = sub.add_parser("diff-cedulas",
                           help="Compara cédulas cargadas desde BD vs Excel para un rango — útil en validación de migración.")
@@ -110,6 +115,7 @@ def _cmd_run(args) -> int:
         str(output_dir),
         str(args.objectives) if args.objectives else None,
         cedulas_source=args.cedulas_source,
+        upload_sheets=not args.no_upload_sheets,
     )
 
     if result:

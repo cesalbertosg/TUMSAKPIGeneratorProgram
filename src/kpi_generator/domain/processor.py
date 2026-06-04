@@ -860,7 +860,8 @@ class DataProcessor:
 
     def generate_report(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                         output_path: str, objectives_file: str = None,
-                        cedulas_source: str = None) -> Optional[str]:
+                        cedulas_source: str = None,
+                        upload_sheets: bool = True) -> Optional[str]:
         """Pipeline v0.5.0: aggregators puros sobre PeriodContext.
 
         Flujo:
@@ -871,9 +872,10 @@ class DataProcessor:
             -> post_calcular_tendencia (rellena Tendencia KM/Viajes)
             -> ChangeTracker (Resumen de Cambios)
             -> _build_promedio_km_sheet (Promedio KM por Unidad)
-            -> save_results (Excel + Sheets)
+            -> save_results (Excel + Sheets opcional)
 
         `cedulas_source`: "db" | "excel" | "sheets" | None (usa Config.CEDULAS_SOURCE).
+        `upload_sheets`: True (default) sincroniza a Google Sheets; False solo genera Excel.
         """
         try:
             self.log("=== INICIO PROCESO KPI ===", code="START")
@@ -944,7 +946,7 @@ class DataProcessor:
                 df_objectives=data['objectives'],
                 df_promedio=df_promedio,
                 df_cedulas_audit=data.get('cedulas_audit'),
-                upload_sheets=True,
+                upload_sheets=upload_sheets,
             )
 
             if result_path:

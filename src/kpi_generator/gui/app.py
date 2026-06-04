@@ -36,6 +36,8 @@ class KPIGeneratorGUI:
             "output": tk.StringVar()
         }
         self.cedulas_source = tk.StringVar(value=Config.CEDULAS_SOURCE)
+        # Default: sí sube a Google Sheets al terminar (igual que antes del v0.5.1).
+        self.upload_sheets_var = tk.BooleanVar(value=True)
 
         self.processor = DataProcessor(self.log, LogLevel.INFO)
         self.setup_ui()
@@ -277,13 +279,32 @@ class KPIGeneratorGUI:
         
         progress_container = tk.Frame(self.controls_frame, bg=self.colors['bg_card'])
         progress_container.pack(fill="x", padx=50, pady=(0, 15))
-        
+
         self.progress = ttk.Progressbar(progress_container,
                                       mode='indeterminate',
                                       length=500,
                                       style='Professional.Horizontal.TProgressbar')
         self.progress.pack()
-        
+
+        # Opciones de ejecucion (checkbox para subir a Sheets, marcado por default)
+        options_frame = tk.Frame(self.controls_frame, bg=self.colors['bg_card'])
+        options_frame.pack(pady=(0, 10))
+        self.upload_sheets_chk = tk.Checkbutton(
+            options_frame,
+            text="Subir resultado a Google Sheets",
+            variable=self.upload_sheets_var,
+            bg=self.colors['bg_card'],
+            fg=self.colors['text_primary'],
+            font=('Segoe UI', 10),
+            activebackground=self.colors['bg_card'],
+            activeforeground=self.colors['text_primary'],
+            selectcolor=self.colors['bg_secondary'],
+            borderwidth=0,
+            highlightthickness=0,
+            cursor='hand2',
+        )
+        self.upload_sheets_chk.pack()
+
         buttons_frame = tk.Frame(self.controls_frame, bg=self.colors['bg_card'])
         buttons_frame.pack()
         
@@ -495,6 +516,7 @@ class KPIGeneratorGUI:
                 self.paths["output"].get(),
                 objectives_file,
                 cedulas_source=self.cedulas_source.get(),
+                upload_sheets=self.upload_sheets_var.get(),
             )
             
             self.root.after(0, self.processing_complete, result)
