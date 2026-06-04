@@ -978,17 +978,49 @@ class DataProcessor:
         # --- Equipo motriz: % Operativo, Tendencia, Cumplimientos ---
         if not df_kpi.empty:
             eq_cols = ['Equipo Motriz', '% Operativo', 'Tendencia KM', 'Tendencia Viajes',
+                       'KM Total', 'Viajes',
                        'Cump KM %', 'Cump Viajes %', 'Densidad Viaje']
             eq_subset = df_kpi[[c for c in eq_cols if c in df_kpi.columns]].copy()
+            # Complemento del equipo (parte proyectada) = Tendencia - KM real.
+            # Es el agregado por motriz; se prorratea en el merge.
+            eq_subset['__compl_km_equipo'] = (
+                eq_subset.get('Tendencia KM', 0).fillna(0)
+                - eq_subset.get('KM Total', 0).fillna(0)
+            )
+            eq_subset['__compl_v_equipo'] = (
+                eq_subset.get('Tendencia Viajes', 0).fillna(0)
+                - eq_subset.get('Viajes', 0).fillna(0)
+            )
             eq_subset = eq_subset.rename(columns={
                 'Cump KM %': 'Cump KM Equipo %',
                 'Cump Viajes %': 'Cump Viajes Equipo %',
                 'Tendencia KM': 'Tendencia KM Equipo',
                 'Tendencia Viajes': 'Tendencia Viajes Equipo',
+                'KM Total': 'KM Total Equipo',
+                'Viajes': 'Viajes Equipo',
             })
             df['Equipo Motriz'] = df['Equipo Motriz'].astype(str)
             eq_subset['Equipo Motriz'] = eq_subset['Equipo Motriz'].astype(str)
             df = df.merge(eq_subset, on='Equipo Motriz', how='left')
+
+            # Prorratear el complemento del equipo entre todas sus filas en Viajes
+            # (viajes + comodatos). Asi SUM por columna en Looker da el complemento real.
+            filas_por_equipo = df.groupby('Equipo Motriz').size()
+            n_filas = df['Equipo Motriz'].map(filas_por_equipo).replace(0, np.nan)
+            df['Complemento Tendencia KM'] = (
+                df['__compl_km_equipo'].fillna(0) / n_filas
+            ).fillna(0).round(4)
+            df['Complemento Tendencia Viajes'] = (
+                df['__compl_v_equipo'].fillna(0) / n_filas
+            ).fillna(0).round(4)
+            # Aditivos por fila: SUM(KM_total) + SUM(Complemento) == Tendencia KM total flota
+            df['Tendencia KM Total'] = (
+                df.get('KM_total', 0).fillna(0) + df['Complemento Tendencia KM']
+            ).round(2)
+            df['Tendencia Viajes Total'] = (
+                df.get('Viajes_count', 0).fillna(0) + df['Complemento Tendencia Viajes']
+            ).round(2)
+            df = df.drop(columns=['__compl_km_equipo', '__compl_v_equipo'])
 
         # --- OpCedula: Motrices, Objetivos consolidados, Cumplimiento, Promedio ---
         if not df_opcedula.empty and 'Operación cedula' in df.columns:
