@@ -94,6 +94,8 @@ _NUMERIC_EQUIPO_COLS = frozenset({
     'Dias Otros Status', 'Dias Activo',
     'KM Cargado', 'KM Vacio', 'KM Total', 'Diesel LTS', 'Rendimiento',
     'Viajes', 'Densidad Viaje',
+    'Objetivo KM Corte', 'Objetivo Viajes Corte',
+    'Complemento KM Objetivo', 'Complemento Viajes Objetivo',
     'Objetivo KM Total', 'Objetivo Viajes Total',
     'Cump KM %', 'Cump Viajes %', '% Operativo',
     'Tendencia KM', 'Tendencia Viajes',
@@ -118,7 +120,9 @@ EQUIPO_OUTPUT_COLS = [
     # Operativos (suma desde Viajes, excluye comodatos)
     'KM Cargado', 'KM Vacio', 'KM Total', 'Diesel LTS', 'Rendimiento',
     'Viajes', 'Densidad Viaje',
-    # Objetivos prorrateados
+    # Objetivos: corte + complemento futuro = total al cierre del mes
+    'Objetivo KM Corte', 'Objetivo Viajes Corte',
+    'Complemento KM Objetivo', 'Complemento Viajes Objetivo',
     'Objetivo KM Total', 'Objetivo Viajes Total',
     'Cump KM %', 'Cump Viajes %',
     # Eficiencia
@@ -322,7 +326,7 @@ class EquipmentAggregator:
         dias = self._contar_dias_motriz(ced)
         dias['Dias Activo'] = self._dias_activo(viajes)
         op_metrics = self._metricas_operativas(viajes)
-        objetivos = self._calcular_objetivos(ced)
+        objetivos = self._calcular_objetivos(ced, asignacion)
         ultimo = self._ultimo_viaje(viajes)
 
         return self._consolidar_fila(
@@ -372,7 +376,9 @@ class EquipmentAggregator:
         asignacion = self._estatus_vigente_arrastre(asignacion, viajes, dias_asignado)
         op_metrics = self._metricas_operativas(viajes)
         # Los arrastres no tienen objetivo directo (los objetivos son por OpCedula motriz).
-        objetivos = {'Objetivo KM Total': 0.0, 'Objetivo Viajes Total': 0.0,
+        objetivos = {'Objetivo KM Corte': 0.0, 'Objetivo Viajes Corte': 0.0,
+                     'Complemento KM Objetivo': 0.0, 'Complemento Viajes Objetivo': 0.0,
+                     'Objetivo KM Total': 0.0, 'Objetivo Viajes Total': 0.0,
                      'Cump KM %': None, 'Cump Viajes %': None}
         ultimo = self._ultimo_viaje(viajes)
 
@@ -551,21 +557,33 @@ class EquipmentAggregator:
             'Densidad Viaje': round(densidad, 2),
         }
 
-    def _calcular_objetivos(self, ced: pd.DataFrame) -> Dict[str, float]:
-        """Σ Objetivo KM/Viajes Diario por dia asignado a OpCedula con objetivo.
+    def _calcular_objetivos(self, ced: pd.DataFrame,
+                            asignacion: AsignacionVigente) -> Dict[str, float]:
+        """Objetivo proyectado al CIERRE del mes (corte + futuro).
 
-        Sin importar status: un dia en Taller dentro de VEND CENTRO sigue
-        sumando el objetivo de VEND CENTRO.
+        Componentes:
+        - Obj corte = Σ Objetivo KM Diario por dia asignado en rango_corriente.
+          Sin importar status: un dia en Taller dentro de VEND CENTRO sigue
+          sumando el objetivo de VEND CENTRO.
+        - Obj futuro = Objetivo Diario de la OpCedula VIGENTE × dias_restantes_mes.
+          Asume que el equipo permanece en su asignacion vigente hasta cierre.
+        - Obj cierre = corte + futuro. Esta cantidad ES comparable con Tendencia KM.
+
+        Si la asignacion vigente es POR ASIGNAR o sin objetivo registrado, el
+        complemento futuro es 0.
         """
         if ced.empty:
-            return {'Objetivo KM Total': 0.0, 'Objetivo Viajes Total': 0.0,
+            return {'Objetivo KM Corte': 0.0, 'Objetivo Viajes Corte': 0.0,
+                    'Complemento KM Objetivo': 0.0, 'Complemento Viajes Objetivo': 0.0,
+                    'Objetivo KM Total': 0.0, 'Objetivo Viajes Total': 0.0,
                     'Cump KM %': None, 'Cump Viajes %': None}
 
+        # --- Obj corte: dias asignados en el rango ---
         rango = self.period.rango_corriente()
         by_date = {row['Fecha Cedula_dt'].normalize(): row for _, row in ced.iterrows()}
 
-        obj_km = 0.0
-        obj_v = 0.0
+        obj_km_corte = 0.0
+        obj_v_corte = 0.0
         for fecha in rango:
             row = by_date.get(fecha.normalize())
             if row is None:
@@ -580,12 +598,26 @@ class EquipmentAggregator:
             obj_entry = self.obj_mapping.get(opcedula)
             if not obj_entry:
                 continue
-            obj_km += float(obj_entry.get('Objetivo KM Diario', 0) or 0)
-            obj_v += float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
+            obj_km_corte += float(obj_entry.get('Objetivo KM Diario', 0) or 0)
+            obj_v_corte += float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
+
+        # --- Obj futuro: asignacion vigente × dias restantes mes ---
+        obj_entry_vig = self.obj_mapping.get(asignacion.operacion_cedula, {})
+        obj_km_diario_vig = float(obj_entry_vig.get('Objetivo KM Diario', 0) or 0)
+        obj_v_diario_vig = float(obj_entry_vig.get('Objetivo Viajes Diario', 0) or 0)
+        compl_km = obj_km_diario_vig * self.period.dias_restantes
+        compl_v = obj_v_diario_vig * self.period.dias_restantes
+
+        obj_km_total = obj_km_corte + compl_km
+        obj_v_total = obj_v_corte + compl_v
 
         return {
-            'Objetivo KM Total': round(obj_km, 2),
-            'Objetivo Viajes Total': round(obj_v, 2),
+            'Objetivo KM Corte': round(obj_km_corte, 2),
+            'Objetivo Viajes Corte': round(obj_v_corte, 2),
+            'Complemento KM Objetivo': round(compl_km, 2),
+            'Complemento Viajes Objetivo': round(compl_v, 2),
+            'Objetivo KM Total': round(obj_km_total, 2),
+            'Objetivo Viajes Total': round(obj_v_total, 2),
             'Cump KM %': None,  # se calcula al consolidar con KM Total
             'Cump Viajes %': None,
         }
@@ -641,12 +673,16 @@ class EquipmentAggregator:
             'Estatus': asignacion.estatus,
             **dias,
             **op_metrics,
+            'Objetivo KM Corte': objetivos.get('Objetivo KM Corte', 0.0),
+            'Objetivo Viajes Corte': objetivos.get('Objetivo Viajes Corte', 0.0),
+            'Complemento KM Objetivo': objetivos.get('Complemento KM Objetivo', 0.0),
+            'Complemento Viajes Objetivo': objetivos.get('Complemento Viajes Objetivo', 0.0),
             'Objetivo KM Total': obj_km,
             'Objetivo Viajes Total': obj_v,
             'Cump KM %': cump_km,
             'Cump Viajes %': cump_v,
             '% Operativo': pct_operativo,
-            'Tendencia KM': 0.0,    # placeholder, lo llena P4 con OpCedula
+            'Tendencia KM': 0.0,    # placeholder, lo llena post_calcular_tendencia
             'Tendencia Viajes': 0.0,
             **ultimo,
         }

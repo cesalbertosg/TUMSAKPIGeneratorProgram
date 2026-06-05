@@ -92,8 +92,15 @@ def test_excluye_arrastres() -> None:
 
 # ---------- Objetivos consolidados ----------
 
-def test_objetivos_consolidados_al_corte() -> None:
-    """Obj KM = obj_diario * titulares * dias_corrientes."""
+def test_objetivos_consolidados_al_cierre() -> None:
+    """Obj al CIERRE = corte + complemento futuro.
+
+    Setup: corte 10/06 (dias_corrientes=10, dias_restantes=20, dias_mes=30),
+    obj_diario=100, 2 titulares.
+      Obj Corte = 100 × 2 × 10 = 2,000
+      Complemento = 100 × 2 × 20 = 4,000
+      Obj Total cierre = 6,000
+    """
     df_eq = _equipos([
         {'Equipo Motriz': 'C070', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND CENTRO',
          'Gerencia': 'CUE', 'Operacion': 'VEND', 'Circuito': 'CENTRO', 'Tipo de Unidad': 'FULL',
@@ -103,14 +110,19 @@ def test_objetivos_consolidados_al_corte() -> None:
          'Estatus': 'Operando', 'Dias Asignado': 10, 'Dias Activo': 9, 'KM Total': 600, 'Viajes': 30},
     ])
     obj = {'VEND CENTRO': {'Objetivo KM Diario': 100, 'Objetivo Viajes Diario': 5}}
-    # corte = dia 10 -> Obj = 100 * 2 * 10 = 2000
     df_op = OpcedulaAggregator(df_eq, obj_mapping=obj, period=_period('2026-06-10'),
                                 log_callback=lambda *_a, **_k: None).aggregate()
     fila = df_op.iloc[0]
-    assert fila['Objetivo KM'] == 2000
-    assert fila['Objetivo Viajes'] == 100
-    assert fila['Cumplimiento KM %'] == 55.0  # 1100/2000
-    assert fila['Cumplimiento Viajes %'] == 55.0  # 55/100
+    assert fila['Objetivo KM Corte'] == 2000
+    assert fila['Complemento KM Objetivo'] == 4000
+    assert fila['Objetivo KM'] == 6000
+    assert fila['Objetivo Viajes Corte'] == 100
+    assert fila['Complemento Viajes Objetivo'] == 200
+    assert fila['Objetivo Viajes'] == 300
+    # Cumplimiento = KM real total / Obj cierre = 1100 / 6000 = 18.33
+    assert fila['Cumplimiento KM %'] == 18.33
+    # Viajes total = 55; Cump = 55 / 300 = 18.33
+    assert fila['Cumplimiento Viajes %'] == 18.33
 
 
 # ---------- % Operativo y promedios ----------

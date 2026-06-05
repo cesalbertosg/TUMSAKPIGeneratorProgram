@@ -40,7 +40,10 @@ OPCEDULA_OUTPUT_COLS = [
     # Operativos (suma desde equipos)
     'KM Cargado', 'KM Vacio', 'KM Total', 'Diesel LTS', 'Rendimiento',
     'Viajes', 'Densidad Viaje',
-    # Objetivos consolidados (Diario x titulares x dias corrientes)
+    # Objetivos al cierre del mes: corte + complemento futuro
+    # (obj_diario × titulares × dias_corrientes / dias_restantes / dias_mes)
+    'Objetivo KM Corte', 'Objetivo Viajes Corte',
+    'Complemento KM Objetivo', 'Complemento Viajes Objetivo',
     'Objetivo KM', 'Objetivo Viajes',
     'Cumplimiento KM %', 'Cumplimiento Viajes %',
     # Eficiencia
@@ -119,12 +122,22 @@ class OpcedulaAggregator:
         rendimiento = round(km_total / diesel, 2) if diesel > 0 else 0.0
         densidad = round(km_total / viajes, 2) if viajes > 0 else 0.0
 
-        # Objetivos consolidados al corte
+        # Objetivos consolidados al CIERRE del mes (corte + complemento futuro).
+        # Asume titulares estables hasta cierre (proyeccion simple).
+        #   Obj corte = obj_diario × titulares × dias_corrientes
+        #   Compl    = obj_diario × titulares × dias_restantes_mes
+        #   Obj total = obj_diario × titulares × dias_mes
         obj_entry = self.obj_mapping.get(opcedula, {})
         obj_km_diario = float(obj_entry.get('Objetivo KM Diario', 0) or 0)
         obj_viajes_diario = float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
-        obj_km_total = round(obj_km_diario * n_titulares * self.period.dias_corrientes, 2)
-        obj_v_total = round(obj_viajes_diario * n_titulares * self.period.dias_corrientes, 2)
+        obj_km_corte = round(obj_km_diario * n_titulares * self.period.dias_corrientes, 2)
+        obj_v_corte = round(obj_viajes_diario * n_titulares * self.period.dias_corrientes, 2)
+        compl_km = round(obj_km_diario * n_titulares * self.period.dias_restantes, 2)
+        compl_v = round(obj_viajes_diario * n_titulares * self.period.dias_restantes, 2)
+        obj_km_total = round(obj_km_corte + compl_km, 2)
+        obj_v_total = round(obj_v_corte + compl_v, 2)
+        # Cumplimiento al cierre: tendencia (KM real + proyeccion) vs objetivo al cierre.
+        # Aqui usamos km_total (KM real) y luego post_calcular_tendencia lo refina.
         cump_km = round(km_total / obj_km_total * 100, 2) if obj_km_total > 0 else 0.0
         cump_v = round(viajes / obj_v_total * 100, 2) if obj_v_total > 0 else 0.0
 
@@ -153,6 +166,10 @@ class OpcedulaAggregator:
             'Rendimiento': rendimiento,
             'Viajes': viajes,
             'Densidad Viaje': densidad,
+            'Objetivo KM Corte': obj_km_corte,
+            'Objetivo Viajes Corte': obj_v_corte,
+            'Complemento KM Objetivo': compl_km,
+            'Complemento Viajes Objetivo': compl_v,
             'Objetivo KM': obj_km_total,
             'Objetivo Viajes': obj_v_total,
             'Cumplimiento KM %': cump_km,

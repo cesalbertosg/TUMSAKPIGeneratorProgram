@@ -434,14 +434,20 @@ class DataProcessor:
         """Distribuir objetivos optimizado incluyendo comodatos."""
         self.log("Asignando objetivos", code="OBJ")
         
-        # v0.5.0: Objetivo KM Total = objetivo al CORTE (dias_corrientes), no al mes
-        # completo. Por eso ya no proyectamos al futuro (Complemento KM/Viajes Objetivo
-        # quedan en 0). Cada fila (viaje o comodato) recibe el obj_diario de su OpCedula
-        # prorrateado entre los viajes/comodatos del mismo (equipo, fecha).
+        # v0.5.0: Objetivo KM Total por fila = objetivo proyectado al CIERRE del mes.
+        # Es simetrico a Tendencia KM Total y permite calcular cumplimiento de cierre
+        # con SUM directo en Looker. Compuesto por:
+        #   Objetivo KM Viaje    = obj_diario_OpCedula_dia / viajes_del_dia
+        #   Complemento KM Obj   = obj_diario_OpCedula_vigente × dias_restantes / viajes_OpCedula_vigente
+        #   Objetivo KM Total    = Viaje + Complemento (suma fila por fila)
         objective_cols = ['Objetivo KM Viaje', 'Objetivo Viajes Viaje', 'Complemento KM Objetivo',
                          'Complemento Viajes Objetivo', 'Objetivo KM Total', 'Objetivo Viajes Total']
         for col in objective_cols:
             df[col] = 0.0
+
+        max_date = df['Fecha creación'].max()
+        days_in_month = calendar.monthrange(max_date.year, max_date.month)[1]
+        remaining_days = days_in_month - max_date.day
 
         for unidad, unit_trips in df.groupby('Equipo Motriz'):
             if unit_trips.empty:
@@ -449,14 +455,16 @@ class DataProcessor:
 
             self._assign_daily_objectives_optimized(unit_trips, obj_mapping, df)
 
-            # NOTA: el complemento futuro (proyectar al cierre del mes) se elimina
-            # en v0.5.0 — la Tendencia KM cubre esa funcion via Complemento Tendencia KM.
-            # Mantenemos las columnas Complemento KM/Viajes Objetivo = 0 por
-            # compatibilidad con consumidores existentes.
+            if remaining_days > 0:
+                self._assign_future_complement_optimized(unit_trips, obj_mapping, remaining_days, df)
 
             indices = unit_trips.index
-            df.loc[indices, 'Objetivo KM Total'] = df.loc[indices, 'Objetivo KM Viaje']
-            df.loc[indices, 'Objetivo Viajes Total'] = df.loc[indices, 'Objetivo Viajes Viaje']
+            df.loc[indices, 'Objetivo KM Total'] = (
+                df.loc[indices, 'Objetivo KM Viaje'] + df.loc[indices, 'Complemento KM Objetivo']
+            )
+            df.loc[indices, 'Objetivo Viajes Total'] = (
+                df.loc[indices, 'Objetivo Viajes Viaje'] + df.loc[indices, 'Complemento Viajes Objetivo']
+            )
 
         return df
     
@@ -938,7 +946,7 @@ class DataProcessor:
 
             # Denormaliza KPIs de equipo y OpCedula a cada fila de Viajes (fuente Looker)
             df_processed = self._denormalize_kpis_to_trips_v050(
-                df_processed, df_kpi, df_opcedula
+                df_processed, df_kpi, df_opcedula,
             )
 
             df_promedio = self._build_promedio_km_sheet_v050(df_opcedula, df_kpi)

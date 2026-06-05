@@ -250,7 +250,12 @@ def test_porcentaje_operativo() -> None:
 # ---------- Objetivos prorrateados ----------
 
 def test_objetivo_prorrateado_mezcla_opcedulas() -> None:
-    """Ejemplo de Beto: 2 dias en op-A (100/dia) + 2 dias en op-B (10/dia) -> 220 total."""
+    """Objetivo al CIERRE = corte (dias asignados) + complemento (vigente × dias_restantes).
+
+    Setup: corte 04/06 (dias_corrientes=4, dias_restantes=26).
+    Dias 1-2 en VEND CENTRO (100/dia), Dias 3-4 en VEND NORTE (10/dia).
+    Asignacion vigente: VEND NORTE.
+    """
     ced = _ced([
         {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
          'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
@@ -270,8 +275,16 @@ def test_objetivo_prorrateado_mezcla_opcedulas() -> None:
         'VEND NORTE': {'Objetivo KM Diario': 10, 'Objetivo Viajes Diario': 1},
     }
     fila = _agg(ced, _trips([]), obj_mapping=obj, corte='2026-06-04').aggregate().iloc[0]
-    assert fila['Objetivo KM Total'] == 220  # 2*100 + 2*10
-    assert fila['Objetivo Viajes Total'] == 6  # 2*2 + 2*1
+    # Corte: 2*100 + 2*10 = 220
+    assert fila['Objetivo KM Corte'] == 220
+    # Complemento: vigente=VEND NORTE (10/dia) × 26 dias restantes
+    assert fila['Complemento KM Objetivo'] == 260
+    # Total al cierre = 220 + 260
+    assert fila['Objetivo KM Total'] == 480
+    # Viajes: corte 2*2 + 2*1 = 6; complemento 1×26 = 26; total = 32
+    assert fila['Objetivo Viajes Corte'] == 6
+    assert fila['Complemento Viajes Objetivo'] == 26
+    assert fila['Objetivo Viajes Total'] == 32
 
 
 def test_objetivo_dia_sin_objetivo_aporta_cero() -> None:
