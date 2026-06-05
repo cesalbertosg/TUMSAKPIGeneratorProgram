@@ -1,0 +1,95 @@
+===============================================================
+   KPI Generator - Instalación (TUMSA)
+===============================================================
+
+Hola Yaneth,
+
+Este USB contiene el instalador del programa que genera los
+reportes KPI a partir de los archivos zmov, zmva y la cédula.
+
+---------------------------------------------------------------
+PASOS DE INSTALACIÓN (primera vez)
+---------------------------------------------------------------
+
+1. Conecta el USB.
+
+2. Doble click en el archivo:
+      KPIGenerator-Setup.exe
+
+   Si Windows Defender muestra un aviso, hacer click en:
+   "Más información" → "Ejecutar de todas formas"
+   (Beto te dirá cómo si te aparece).
+
+3. El instalador te guiará por estas pantallas:
+
+   a) Bienvenida → Siguiente
+   b) Carpeta de instalación → dejar el valor por defecto
+      (C:\Users\<tu_usuario>\AppData\Local\KPIGenerator)
+   c) "Pega el Service Account JSON":
+      Beto te entregó un archivo .json aparte. Tienes 2 opciones:
+        - Click en "Cargar desde archivo..." y seleccionarlo
+        - O abrirlo con Bloc de Notas, copiar TODO el contenido
+          y pegarlo en el cuadro grande
+   d) "Google Sheet de destino":
+      Ya viene prellenado. NO cambiar a menos que Beto te indique.
+   e) Resumen → click Instalar
+   f) Esperar (descarga el programa de internet, ~2 minutos)
+   g) "Finalizar". Marca la casilla para abrir el programa.
+
+4. En el escritorio aparecerá el ícono:  KPI Generator
+   Doble click para abrirlo en cualquier momento.
+
+---------------------------------------------------------------
+USO DIARIO (después de instalar)
+---------------------------------------------------------------
+
+1. Doble click en "KPI Generator" del escritorio.
+
+2. Se abre una ventana oscura. Llenar los 5 campos:
+
+   - Viajes (zmov):       seleccionar zmov.XLSX del día
+   - Combustible (zmva):  seleccionar zmva.XLSX del día
+   - Cédulas:             seleccionar la CARPETA con las cédulas
+                          (donde están los archivos
+                          Cedula DDMMYYYY.xlsx del mes)
+   - Objetivos:           seleccionar "Objetivo de KM <mes>.xlsx"
+   - Carpeta destino:     donde guardar el Excel generado
+
+3. Confirmar que "Fuente cédulas" diga: excel
+
+4. Confirmar que "Subir resultado a Google Sheets" esté marcado.
+
+5. Click en "🚀 EJECUTAR ANÁLISIS".
+
+6. Esperar (~30 segundos). Se abre un log mostrando avance.
+
+7. Al terminar:
+   - Excel guardado en la carpeta destino
+   - Google Sheets "KPI KM Auto" actualizado
+
+---------------------------------------------------------------
+ACTUALIZACIONES
+---------------------------------------------------------------
+
+Cuando Beto te entregue un USB nuevo:
+  - Doble click al nuevo KPIGenerator-Setup.exe
+  - Sigue los mismos pasos
+  - Tus credenciales se conservan (no las tienes que pegar otra vez)
+
+---------------------------------------------------------------
+SI ALGO FALLA
+---------------------------------------------------------------
+
+Errores comunes:
+
+  "No se puede descargar el repositorio"
+     → No hay internet. Verificar conexión y reintentar.
+
+  "Service Account JSON inválido"
+     → Pegar el JSON completo (incluye llaves { } al inicio y fin)
+
+  El programa abre pero no procesa
+     → Cerrar, abrir de nuevo. Si persiste, contactar a Beto.
+
+Contacto: Beto Solano - albertosolano@tumsa.com.mx
+===============================================================

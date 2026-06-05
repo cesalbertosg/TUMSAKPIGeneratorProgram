@@ -1,0 +1,7 @@
+# Placeholder. Los binarios reales se descargan localmente antes de compilar.
+# Ver ../README-installer.md seccion "Preparacion previa".
+#
+# Archivos esperados aqui (no commiteados):
+#   python-3.14.4-embed-amd64.zip   ~12 MB
+#   get-pip.py                      ~2 MB
+#   icons/kpi.ico                   <50 KB

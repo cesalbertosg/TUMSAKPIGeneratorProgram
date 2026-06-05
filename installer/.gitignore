@@ -1,0 +1,12 @@
+# Output de la compilacion
+dist/
+
+# Binarios bundle (no commitear; bajar localmente segun README)
+bundle/*.zip
+bundle/*.py
+bundle/icons/*.ico
+bundle/icons/*.png
+
+# Assets graficos (no commitear pesados)
+assets/*.bmp
+assets/*.png

@@ -1,0 +1,7 @@
+# Placeholder. Assets graficos del installer.
+#
+# Archivos esperados aqui:
+#   wizard-image.bmp   Banner lateral del wizard (164x314)
+#   header.bmp         Header de paginas (150x60)
+#
+# Si no estan, Inno Setup usa los assets default (azul corporativo).
