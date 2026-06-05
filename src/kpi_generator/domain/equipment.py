@@ -516,6 +516,8 @@ class EquipmentAggregator:
           Distancia es el km cargado real reportado.)
         - `KM_vacio` = KMLiqVacioFinal.
         - `KM_total` = KM_cargado + KM_vacio.
+        - `Viajes_count` = 1 si el viaje cuenta, 0 si StatusViaje='X' o caso CUERNAVACA
+          con KM=0. Respeta la regla de negocio de `_calculate_trips_efficient`.
 
         Las columnas crudas (`KMLiqCargadoFinal`, `KMLiqVacioFinal`) NO se usan
         directamente — darian 0 en viajes sin liquidar.
@@ -531,7 +533,12 @@ class EquipmentAggregator:
         if km_total == 0 and (km_cargado > 0 or km_vacio > 0):
             km_total = km_cargado + km_vacio
         diesel = viajes.get('Diesel_LTS', pd.Series(dtype=float)).fillna(0).sum()
-        n_viajes = len(viajes)
+        # Viajes_count manda (respeta StatusViaje='X' y CUERNAVACA KM=0).
+        # Fallback a len() solo si la columna no existe (tests sin pipeline completo).
+        if 'Viajes_count' in viajes.columns:
+            n_viajes = int(viajes['Viajes_count'].fillna(0).sum())
+        else:
+            n_viajes = len(viajes)
         rendimiento = km_total / diesel if diesel > 0 else 0.0
         densidad = km_total / n_viajes if n_viajes > 0 else 0.0
         return {

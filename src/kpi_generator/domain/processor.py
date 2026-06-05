@@ -434,28 +434,30 @@ class DataProcessor:
         """Distribuir objetivos optimizado incluyendo comodatos."""
         self.log("Asignando objetivos", code="OBJ")
         
-        objective_cols = ['Objetivo KM Viaje', 'Objetivo Viajes Viaje', 'Complemento KM Objetivo', 
+        # v0.5.0: Objetivo KM Total = objetivo al CORTE (dias_corrientes), no al mes
+        # completo. Por eso ya no proyectamos al futuro (Complemento KM/Viajes Objetivo
+        # quedan en 0). Cada fila (viaje o comodato) recibe el obj_diario de su OpCedula
+        # prorrateado entre los viajes/comodatos del mismo (equipo, fecha).
+        objective_cols = ['Objetivo KM Viaje', 'Objetivo Viajes Viaje', 'Complemento KM Objetivo',
                          'Complemento Viajes Objetivo', 'Objetivo KM Total', 'Objetivo Viajes Total']
         for col in objective_cols:
             df[col] = 0.0
-        
-        max_date = df['Fecha creación'].max()
-        days_in_month = calendar.monthrange(max_date.year, max_date.month)[1]
-        remaining_days = days_in_month - max_date.day
-        
+
         for unidad, unit_trips in df.groupby('Equipo Motriz'):
             if unit_trips.empty:
                 continue
-            
+
             self._assign_daily_objectives_optimized(unit_trips, obj_mapping, df)
-            
-            if remaining_days > 0:
-                self._assign_future_complement_optimized(unit_trips, obj_mapping, remaining_days, df)
-            
+
+            # NOTA: el complemento futuro (proyectar al cierre del mes) se elimina
+            # en v0.5.0 — la Tendencia KM cubre esa funcion via Complemento Tendencia KM.
+            # Mantenemos las columnas Complemento KM/Viajes Objetivo = 0 por
+            # compatibilidad con consumidores existentes.
+
             indices = unit_trips.index
-            df.loc[indices, 'Objetivo KM Total'] = df.loc[indices, 'Objetivo KM Viaje'] + df.loc[indices, 'Complemento KM Objetivo']
-            df.loc[indices, 'Objetivo Viajes Total'] = df.loc[indices, 'Objetivo Viajes Viaje'] + df.loc[indices, 'Complemento Viajes Objetivo']
-        
+            df.loc[indices, 'Objetivo KM Total'] = df.loc[indices, 'Objetivo KM Viaje']
+            df.loc[indices, 'Objetivo Viajes Total'] = df.loc[indices, 'Objetivo Viajes Viaje']
+
         return df
     
     def _assign_daily_objectives_optimized(self, unit_trips: pd.DataFrame, obj_mapping: Dict, main_df: pd.DataFrame):
@@ -986,11 +988,14 @@ class DataProcessor:
         # etc.) NO se exponen porque inflan al sumar; usar las `... Total` en su lugar.
         if not df_kpi.empty:
             eq_cols = ['Equipo Motriz', '% Operativo', 'Tendencia KM', 'KM Total',
-                       'Tendencia Viajes', 'Viajes',
+                       'Tendencia Viajes', 'Viajes', 'Operacion Cedula',
                        'Cump KM %', 'Cump Viajes %', 'Densidad Viaje']
             eq_subset = df_kpi[[c for c in eq_cols if c in df_kpi.columns]].copy()
             # Complemento del equipo (parte proyectada) = Tendencia - KM real.
-            # Es el agregado por motriz; se prorratea por sus filas en el merge.
+            # Se prorratea entre las filas del equipo cuya OpCedula del dia coincide
+            # con la OpCedula vigente del motriz (Bug 3 fix). Esto preserva la
+            # atribucion correcta cuando un equipo cambio de OpCedula durante el
+            # periodo y el complemento debe imputarse a su asignacion vigente.
             eq_subset['__compl_km_equipo'] = (
                 eq_subset.get('Tendencia KM', 0).fillna(0)
                 - eq_subset.get('KM Total', 0).fillna(0)
@@ -999,28 +1004,47 @@ class DataProcessor:
                 eq_subset.get('Tendencia Viajes', 0).fillna(0)
                 - eq_subset.get('Viajes', 0).fillna(0)
             )
-            # Removemos las agregadas crudas; solo dejamos atributos y los
-            # __compl* internos. El resto se calcula por fila despues del merge.
+            # Removemos las agregadas crudas; solo dejamos atributos, OpCedula
+            # vigente y los __compl* internos. El resto se calcula por fila.
             eq_subset = eq_subset.drop(columns=['Tendencia KM', 'Tendencia Viajes',
                                                   'KM Total', 'Viajes'])
             eq_subset = eq_subset.rename(columns={
                 'Cump KM %': 'Cump KM Equipo %',
                 'Cump Viajes %': 'Cump Viajes Equipo %',
+                'Operacion Cedula': '__opcedula_vigente',
             })
             df['Equipo Motriz'] = df['Equipo Motriz'].astype(str)
             eq_subset['Equipo Motriz'] = eq_subset['Equipo Motriz'].astype(str)
             df = df.merge(eq_subset, on='Equipo Motriz', how='left')
 
-            # Prorratear el complemento del equipo entre todas sus filas en Viajes
-            # (viajes + comodatos). Asi SUM por columna en Looker da el total real.
-            filas_por_equipo = df.groupby('Equipo Motriz').size()
-            n_filas = df['Equipo Motriz'].map(filas_por_equipo).replace(0, np.nan)
-            df['Complemento Tendencia KM'] = (
-                df['__compl_km_equipo'].fillna(0) / n_filas
-            ).fillna(0).round(4)
-            df['Complemento Tendencia Viajes'] = (
-                df['__compl_v_equipo'].fillna(0) / n_filas
-            ).fillna(0).round(4)
+            # Mascara: filas cuya OpCedula del dia == OpCedula vigente del motriz.
+            # Se imputa el complemento solo a estas. Si un equipo no tiene NINGUNA
+            # fila con OpCedula vigente (caso raro: cambio reciente sin viajes en
+            # la nueva), se cae al prorrateo simple entre todas sus filas.
+            df['__op_dia'] = df.get('Operación cedula', pd.Series('', index=df.index)).astype(str)
+            df['__match_vigente'] = (
+                df['__op_dia'] == df['__opcedula_vigente'].astype(str)
+            )
+            n_match_por_equipo = df.groupby('Equipo Motriz')['__match_vigente'].sum()
+            n_total_por_equipo = df.groupby('Equipo Motriz').size()
+            df['__n_match'] = df['Equipo Motriz'].map(n_match_por_equipo)
+            df['__n_total'] = df['Equipo Motriz'].map(n_total_por_equipo)
+
+            # Denominador: si hay matches -> N filas matching; si no -> N filas totales
+            denom = df['__n_match'].where(df['__n_match'] > 0, df['__n_total'])
+            denom = denom.replace(0, np.nan)
+            # Distribuir SOLO en filas matching (o en todas si no hay matching)
+            distribuir_aqui = df['__match_vigente'] | (df['__n_match'] == 0)
+            df['Complemento Tendencia KM'] = np.where(
+                distribuir_aqui,
+                (df['__compl_km_equipo'].fillna(0) / denom).fillna(0),
+                0.0,
+            ).round(4)
+            df['Complemento Tendencia Viajes'] = np.where(
+                distribuir_aqui,
+                (df['__compl_v_equipo'].fillna(0) / denom).fillna(0),
+                0.0,
+            ).round(4)
             # Aditivos por fila: SUM(KM_total) + SUM(Complemento) == Tendencia KM total flota
             df['Tendencia KM Total'] = (
                 df.get('KM_total', 0).fillna(0) + df['Complemento Tendencia KM']
@@ -1028,7 +1052,9 @@ class DataProcessor:
             df['Tendencia Viajes Total'] = (
                 df.get('Viajes_count', 0).fillna(0) + df['Complemento Tendencia Viajes']
             ).round(2)
-            df = df.drop(columns=['__compl_km_equipo', '__compl_v_equipo'])
+            df = df.drop(columns=['__compl_km_equipo', '__compl_v_equipo',
+                                   '__opcedula_vigente', '__op_dia', '__match_vigente',
+                                   '__n_match', '__n_total'])
 
         # --- OpCedula: solo atributos (porcentajes / conteos / promedios) ---
         # Las agregadas crudas (`Tendencia KM`, `Objetivo KM`, `Tendencia Viajes`,
