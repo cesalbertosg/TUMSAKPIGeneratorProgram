@@ -975,14 +975,22 @@ class DataProcessor:
         """
         df = df_trips.copy()
 
-        # --- Equipo motriz: % Operativo, Tendencia, Cumplimientos ---
+        # --- Equipo motriz ---
+        # Solo atributos (porcentajes/promedios) y los aditivos prorrateados.
+        # Las metricas SUMABLES por fila viven aqui:
+        #   - KM_total, Viajes_count      (ya vienen de process_trips_optimized)
+        #   - Objetivo KM Total, Viajes   (ya vienen prorrateados)
+        #   - Complemento Tendencia KM/V  (prorrateado abajo)
+        #   - Tendencia KM Total / Viajes Total (KM_total/Viajes + Complemento)
+        # Las columnas denormalizadas viejas (`Tendencia KM Equipo`, `KM Total Equipo`,
+        # etc.) NO se exponen porque inflan al sumar; usar las `... Total` en su lugar.
         if not df_kpi.empty:
-            eq_cols = ['Equipo Motriz', '% Operativo', 'Tendencia KM', 'Tendencia Viajes',
-                       'KM Total', 'Viajes',
+            eq_cols = ['Equipo Motriz', '% Operativo', 'Tendencia KM', 'KM Total',
+                       'Tendencia Viajes', 'Viajes',
                        'Cump KM %', 'Cump Viajes %', 'Densidad Viaje']
             eq_subset = df_kpi[[c for c in eq_cols if c in df_kpi.columns]].copy()
             # Complemento del equipo (parte proyectada) = Tendencia - KM real.
-            # Es el agregado por motriz; se prorratea en el merge.
+            # Es el agregado por motriz; se prorratea por sus filas en el merge.
             eq_subset['__compl_km_equipo'] = (
                 eq_subset.get('Tendencia KM', 0).fillna(0)
                 - eq_subset.get('KM Total', 0).fillna(0)
@@ -991,20 +999,20 @@ class DataProcessor:
                 eq_subset.get('Tendencia Viajes', 0).fillna(0)
                 - eq_subset.get('Viajes', 0).fillna(0)
             )
+            # Removemos las agregadas crudas; solo dejamos atributos y los
+            # __compl* internos. El resto se calcula por fila despues del merge.
+            eq_subset = eq_subset.drop(columns=['Tendencia KM', 'Tendencia Viajes',
+                                                  'KM Total', 'Viajes'])
             eq_subset = eq_subset.rename(columns={
                 'Cump KM %': 'Cump KM Equipo %',
                 'Cump Viajes %': 'Cump Viajes Equipo %',
-                'Tendencia KM': 'Tendencia KM Equipo',
-                'Tendencia Viajes': 'Tendencia Viajes Equipo',
-                'KM Total': 'KM Total Equipo',
-                'Viajes': 'Viajes Equipo',
             })
             df['Equipo Motriz'] = df['Equipo Motriz'].astype(str)
             eq_subset['Equipo Motriz'] = eq_subset['Equipo Motriz'].astype(str)
             df = df.merge(eq_subset, on='Equipo Motriz', how='left')
 
             # Prorratear el complemento del equipo entre todas sus filas en Viajes
-            # (viajes + comodatos). Asi SUM por columna en Looker da el complemento real.
+            # (viajes + comodatos). Asi SUM por columna en Looker da el total real.
             filas_por_equipo = df.groupby('Equipo Motriz').size()
             n_filas = df['Equipo Motriz'].map(filas_por_equipo).replace(0, np.nan)
             df['Complemento Tendencia KM'] = (
@@ -1022,20 +1030,20 @@ class DataProcessor:
             ).round(2)
             df = df.drop(columns=['__compl_km_equipo', '__compl_v_equipo'])
 
-        # --- OpCedula: Motrices, Objetivos consolidados, Cumplimiento, Promedio ---
+        # --- OpCedula: solo atributos (porcentajes / conteos / promedios) ---
+        # Las agregadas crudas (`Tendencia KM`, `Objetivo KM`, `Tendencia Viajes`,
+        # `Objetivo Viajes`) NO se exponen aqui — al estar denormalizadas inflan
+        # con SUM. Para totales por OpCedula, agrupar por `Operacion Cedula` con
+        # los campos sumables ya disponibles (`KM_total`, `Tendencia KM Total`, etc.).
         if not df_opcedula.empty and 'Operación cedula' in df.columns:
-            op_cols = ['Operacion Cedula', 'Motrices Titulares', 'Objetivo KM',
-                       'Objetivo Viajes', 'Cumplimiento KM %', 'Cumplimiento Viajes %',
-                       'Promedio KM dia unidad', 'Tendencia KM', 'Tendencia Viajes']
+            op_cols = ['Operacion Cedula', 'Motrices Titulares',
+                       'Cumplimiento KM %', 'Cumplimiento Viajes %',
+                       'Promedio KM dia unidad']
             op_subset = df_opcedula[[c for c in op_cols if c in df_opcedula.columns]].copy()
             op_subset = op_subset.rename(columns={
                 'Operacion Cedula': '__opcedula_join',
-                'Tendencia KM': 'Tendencia KM OpCed',
-                'Tendencia Viajes': 'Tendencia Viajes OpCed',
                 'Cumplimiento KM %': 'Cumplimiento KM OpCed %',
                 'Cumplimiento Viajes %': 'Cumplimiento Viajes OpCed %',
-                'Objetivo KM': 'Objetivo KM OpCed',
-                'Objetivo Viajes': 'Objetivo Viajes OpCed',
             })
             df['__opcedula_join'] = df['Operación cedula'].astype(str)
             op_subset['__opcedula_join'] = op_subset['__opcedula_join'].astype(str)
