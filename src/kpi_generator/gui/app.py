@@ -35,7 +35,12 @@ class KPIGeneratorGUI:
             "objectives": tk.StringVar(),
             "output": tk.StringVar()
         }
-        self.cedulas_source = tk.StringVar(value=Config.CEDULAS_SOURCE)
+        # Si psycopg2 no esta instalado (distribuciones standalone sin BD),
+        # forzamos arranque en "excel". El dropdown ocultara la opcion "db".
+        _default_source = Config.CEDULAS_SOURCE
+        if _default_source == "db" and not Config.db_available():
+            _default_source = "excel"
+        self.cedulas_source = tk.StringVar(value=_default_source)
         # Default: sí sube a Google Sheets al terminar (igual que antes del v0.5.1).
         self.upload_sheets_var = tk.BooleanVar(value=True)
 
@@ -261,10 +266,12 @@ class KPIGeneratorGUI:
         combo_frame.pack(side="left", fill="x", expand=True, padx=(0, 10))
         combo_frame.pack_propagate(False)
 
+        # Oculta la opcion "db" si psycopg2 no esta instalado (distribucion sin BD).
+        _values = ["db", "excel", "sheets"] if Config.db_available() else ["excel", "sheets"]
         combo = ttk.Combobox(
             combo_frame,
             textvariable=self.cedulas_source,
-            values=["db", "excel", "sheets"],
+            values=_values,
             state="readonly",
             font=('Segoe UI', 10),
         )

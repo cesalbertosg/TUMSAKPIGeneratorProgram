@@ -160,6 +160,13 @@ class DataProcessor:
 
         if source == "db":
             self.log("Fuente cédulas: PostgreSQL", code="SRC")
+            if not Config.db_available():
+                self.log(
+                    "Falta dependencia 'psycopg2-binary'. Reinstala con: "
+                    "pip install -e .[db]   o usa --cedulas-source excel.",
+                    LogLevel.ERROR, "ERR",
+                )
+                return None, pd.DataFrame()
             try:
                 from kpi_generator.io.cedulas_db import load_cedulas_from_db
                 from kpi_generator.io.date_range import derive_date_range

@@ -76,6 +76,19 @@ class Config:
     # registrar paletas nuevas. Si el nombre no existe, cae a "dark".
     GUI_THEME = os.getenv("KPI_GUI_THEME", "dark").lower()
 
+    # --- Capacidades del runtime ---
+    # True si la dependencia opcional `psycopg2` esta instalada y la fuente "db"
+    # es posible. False para distribuciones standalone (ej. installer Yaneth)
+    # que no necesitan PostgreSQL — la GUI esconde la opcion y el CLI falla
+    # con error claro si se solicita explicitamente.
+    @staticmethod
+    def db_available() -> bool:
+        try:
+            import psycopg2  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
     # --- Conexión PostgreSQL Cédula DG ---
     PG_CEDULA_HOST = os.getenv("PG_CEDULA_HOST", "172.17.1.4")
     PG_CEDULA_PORT = int(os.getenv("PG_CEDULA_PORT", "5432"))

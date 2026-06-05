@@ -27,10 +27,15 @@ dependencies = [
     "gspread>=6.0",
     "google-auth>=2.30",
     "python-dotenv>=1.0",
-    "psycopg2-binary>=2.9",
 ]
 
 [project.optional-dependencies]
+# Soporte PostgreSQL como fuente de cedulas (requiere VPN/red interna a 172.17.1.4).
+# Sin este extra el dropdown 'db' queda deshabilitado en la GUI y el CLI muestra
+# error claro si se solicita explicitamente.
+db = [
+    "psycopg2-binary>=2.9",
+]
 sap = [
     "pyautogui>=0.9.54",
     "pillow>=10.0",

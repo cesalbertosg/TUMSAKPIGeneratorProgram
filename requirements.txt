@@ -8,7 +8,11 @@ openpyxl>=3.1
 gspread>=6.0
 google-auth>=2.30
 python-dotenv>=1.0
-psycopg2-binary>=2.9
+
+# --- Opcional: PostgreSQL como fuente de cédulas (extras "db") ---
+# Solo necesario si CEDULAS_SOURCE=db (VPN a 172.17.1.4 requerida).
+# Para distribuciones sin BD (ej. installer de Yaneth), no instalar.
+# psycopg2-binary>=2.9
 
 # --- Opcional: extracción SAP (extras "sap") ---
 # pyautogui>=0.9.54
