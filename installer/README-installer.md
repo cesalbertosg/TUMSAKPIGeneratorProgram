@@ -53,18 +53,18 @@ installer/
 Descargar de https://jrsoftware.org/isdl.php (Unicode, version 6+). Instalar.
 El compilador `iscc.exe` queda en `C:\Program Files (x86)\Inno Setup 6\`.
 
-### 2. Descargar Python embebido
+### 2. Descargar bundle (automático)
 
 ```powershell
-cd installer\bundle
-curl -L -o python-3.14.4-embed-amd64.zip ^
-  https://www.python.org/ftp/python/3.14.4/python-3.14.4-embed-amd64.zip
-
-# Verificar SHA-256 (publicado en python.org)
-certutil -hashfile python-3.14.4-embed-amd64.zip SHA256
-
-curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+cd installer
+powershell -ExecutionPolicy Bypass -File setup-bundle.ps1
 ```
+
+Esto descarga Python 3.14.4 embebido + get-pip.py, calcula SHA-256 y
+actualiza `verify-bundle.bat` con el hash real. ~14 MB de descargas.
+
+Falta opcional: copiar un `kpi.ico` (32×32 o multi-resolución) a
+`bundle/icons/kpi.ico`. Si no, Inno Setup usa el icono default.
 
 ### 3. Crear release en GitHub
 
