@@ -90,7 +90,56 @@ Write-Host "[INFO] Verifica este hash contra el publicado en python.org:" -Foreg
 Write-Host "       https://www.python.org/downloads/release/python-3144/" -ForegroundColor Yellow
 Write-Host "       Esperado: $PythonSha" -ForegroundColor Yellow
 
-# --- 5. Icono ---
+# --- 5. Tkinter (NO viene en Python embedded) ---
+Write-Host ""
+Write-Host "=== 5. Tkinter add-on (Python embedded NO incluye Tk) ===" -ForegroundColor Magenta
+
+$TkAddonZip = Join-Path $BundleDir "tkinter-addon.zip"
+$FullPythonRoot = "C:\Users\Data Analyst\AppData\Local\Programs\Python\Python314"
+
+if ((Test-Path $TkAddonZip) -and -not $Force) {
+    Write-Host "[SKIP] Ya existe: $TkAddonZip" -ForegroundColor Yellow
+} elseif (-not (Test-Path $FullPythonRoot)) {
+    Write-Host "[WARN] No se encontro Python full install en $FullPythonRoot" -ForegroundColor Yellow
+    Write-Host "       El installer fallara al abrir la GUI (Tkinter ausente)." -ForegroundColor Yellow
+    Write-Host "       Instala Python 3.14.4 full y reintenta." -ForegroundColor Yellow
+} else {
+    Write-Host "[GET ] Copiando Tk de $FullPythonRoot ..." -ForegroundColor Cyan
+    $TempStage = Join-Path $env:TEMP "kpi-tk-stage"
+    if (Test-Path $TempStage) { Remove-Item -Recurse -Force $TempStage }
+    New-Item -ItemType Directory -Force -Path $TempStage | Out-Null
+
+    # Archivos y carpetas necesarios para tkinter en Python embedded.
+    $items = @(
+        @{ src = "Lib\tkinter"; dst = "Lib\tkinter" },
+        @{ src = "tcl";         dst = "tcl"        },
+        @{ src = "DLLs\_tkinter.pyd";  dst = "_tkinter.pyd"   },
+        @{ src = "DLLs\tcl86t.dll";    dst = "tcl86t.dll"     },
+        @{ src = "DLLs\tk86t.dll";     dst = "tk86t.dll"      },
+        @{ src = "DLLs\zlib1.dll";     dst = "zlib1.dll"      }
+    )
+    foreach ($item in $items) {
+        $srcPath = Join-Path $FullPythonRoot $item.src
+        $dstPath = Join-Path $TempStage $item.dst
+        if (-not (Test-Path $srcPath)) {
+            Write-Host "[WARN] Falta $srcPath (se omite)" -ForegroundColor Yellow
+            continue
+        }
+        $dstDir = Split-Path -Parent $dstPath
+        if ($dstDir) { New-Item -ItemType Directory -Force -Path $dstDir | Out-Null }
+        if ((Get-Item $srcPath).PSIsContainer) {
+            Copy-Item -Recurse -Force $srcPath $dstPath
+        } else {
+            Copy-Item -Force $srcPath $dstPath
+        }
+    }
+    Compress-Archive -Path "$TempStage\*" -DestinationPath $TkAddonZip -Force
+    Remove-Item -Recurse -Force $TempStage
+    $TkSize = "{0:N1} MB" -f ((Get-Item $TkAddonZip).Length / 1MB)
+    Write-Host "[OK  ] $TkAddonZip ($TkSize)" -ForegroundColor Green
+}
+
+# --- 6. Icono ---
 Write-Host ""
 Write-Host "=== 4. Icono ===" -ForegroundColor Magenta
 if (-not (Test-Path $IconPath)) {

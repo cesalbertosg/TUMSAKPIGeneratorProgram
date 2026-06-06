@@ -45,6 +45,8 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 ; Python embebido (~12 MB)
 Source: "bundle\{#PythonEmbedZip}"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "bundle\get-pip.py"; DestDir: "{tmp}"; Flags: deleteafterinstall
+; Tkinter add-on (Python embedded NO incluye Tk). Generado por setup-bundle.ps1.
+Source: "bundle\tkinter-addon.zip"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "bundle\icons\kpi.ico"; DestDir: "{app}\bundle\icons"; Flags: ignoreversion
 
 [Icons]
@@ -91,6 +93,10 @@ begin
     // 1. Extraer Python embebido
     WizardForm.StatusLabel.Caption := 'Instalando Python embebido...';
     ExtractZip(ExpandConstant('{tmp}\{#PythonEmbedZip}'), PythonDir);
+
+    // 1.5. Superponer Tkinter (no incluido en embedded oficial)
+    WizardForm.StatusLabel.Caption := 'Instalando Tkinter...';
+    ExtractZip(ExpandConstant('{tmp}\tkinter-addon.zip'), PythonDir);
 
     // 2. Habilitar import system (descomentar `import site` en pthXXX._pth)
     EnablePythonSitePackages(PythonDir);

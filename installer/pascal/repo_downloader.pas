@@ -12,22 +12,21 @@ begin
   Result := (ResultCode = 0) and FileExists(DestPath);
 end;
 
-// --- Extraer un ZIP usando Shell.Application (sin dependencias externas) ---
+// --- Extraer un ZIP usando PowerShell Expand-Archive ---
+// Sincrono (ewWaitUntilTerminated) — Shell.Application.CopyHere era asincrono
+// y dejaba la carpeta vacia cuando el installer continuaba al siguiente paso.
 procedure ExtractZip(const ZipPath: string; const DestDir: string);
 var
-  Shell: Variant;
-  Source, Target: Variant;
+  ResultCode: Integer;
+  PsCmd: string;
 begin
   ForceDirectories(DestDir);
-  Shell := CreateOleObject('Shell.Application');
-  Source := Shell.NameSpace(ZipPath);
-  Target := Shell.NameSpace(DestDir);
-  if VarIsNull(Source) or VarIsNull(Target) then begin
-    MsgBox('No se pudo abrir el ZIP: ' + ZipPath, mbError, MB_OK);
+  PsCmd := Format('-NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''%s'' -DestinationPath ''%s'' -Force"', [ZipPath, DestDir]);
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then begin
+    MsgBox(Format('Falló la extracción de %s a %s (codigo %d).', [ZipPath, DestDir, ResultCode]), mbError, MB_OK);
     Abort;
   end;
-  // 16 = silenciar promps, 4 = ocultar progreso del Explorer
-  Target.CopyHere(Source.Items, 16 or 4);
 end;
 
 // --- FindFiles helper (FindFirstFile + FindNextFile + arreglo) ---
@@ -54,23 +53,38 @@ begin
 end;
 
 // --- Python embebido viene con `import site` deshabilitado por default ---
-// Hay que editar pythonXXX._pth para que el `pip install -e .` funcione.
+// Hay que editar pythonXXX._pth para que:
+//   - `import site` este activo (habilita site-packages para pip)
+//   - `Lib` este en sys.path (donde copiamos tkinter)
 procedure EnablePythonSitePackages(const PythonDir: string);
 var
   PthFiles: TArrayOfString;
-  Lines: TArrayOfString;
-  i, j: Integer;
+  Lines, NewLines: TArrayOfString;
+  i, j, k: Integer;
   PthPath: string;
+  HasLib: Boolean;
 begin
   FindFilesPattern(PythonDir + '\python*._pth', PthFiles);
   for i := 0 to GetArrayLength(PthFiles) - 1 do begin
     PthPath := PthFiles[i];
     if LoadStringsFromFile(PthPath, Lines) then begin
+      HasLib := False;
       for j := 0 to GetArrayLength(Lines) - 1 do begin
-        if Lines[j] = '#import site' then
+        if (Lines[j] = '#import site') or (Lines[j] = '# import site') then
           Lines[j] := 'import site';
+        if Trim(Lines[j]) = 'Lib' then
+          HasLib := True;
       end;
-      SaveStringsToFile(PthPath, Lines, False);
+      if not HasLib then begin
+        SetArrayLength(NewLines, GetArrayLength(Lines) + 2);
+        NewLines[0] := 'Lib';
+        NewLines[1] := 'Lib\site-packages';
+        for k := 0 to GetArrayLength(Lines) - 1 do
+          NewLines[k + 2] := Lines[k];
+        SaveStringsToFile(PthPath, NewLines, False);
+      end else begin
+        SaveStringsToFile(PthPath, Lines, False);
+      end;
     end;
   end;
 end;
