@@ -45,16 +45,8 @@ var
 begin
   if not FileExists(FilePath) then Exit;
   UserName := GetUserNameString();
-  Params := Format('"%s" /inheritance:r /grant:r "%s:F" /T /C /Q',
-                   [FilePath, UserName]);
-  Exec(
-    ExpandConstant('{sys}\icacls.exe'),
-    Params,
-    '',
-    SW_HIDE,
-    ewWaitUntilTerminated,
-    ResultCode
-  );
+  Params := Format('"%s" /inheritance:r /grant:r "%s:F" /T /C /Q', [FilePath, UserName]);
+  Exec(ExpandConstant('{sys}\icacls.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   // Si falla, no abortar — el archivo existe, solo no esta blindado.
   // (Por ej. en USB / FAT32 donde icacls no aplica.)
 end;

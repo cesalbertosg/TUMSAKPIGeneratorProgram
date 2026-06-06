@@ -11,30 +11,35 @@
 const
   DEFAULT_SHEETS_ID = '1sv8P004Ej85D_GF4YwEmoBO1XqWR1KYdGOSb1FJWM8Y';
 
+// --- Variables globales del wizard (compartidas con KPIGenerator-Setup.iss) ---
+var
+  PageJson: TInputQueryWizardPage;
+  PageSheetsId: TInputQueryWizardPage;
+  PageConfirm: TOutputMsgWizardPage;
+
 // --- Boton "Cargar desde archivo" en pagina 1 ---
 procedure OnLoadJsonClick(Sender: TObject);
 var
-  OpenDialog: TOpenDialog;
+  SelectedFile: string;
   FileLines: TArrayOfString;
   i: Integer;
   Combined: string;
 begin
-  OpenDialog := TOpenDialog.Create(nil);
-  try
-    OpenDialog.Filter := 'JSON Service Account (*.json)|*.json|Todos|*.*';
-    OpenDialog.Title := 'Selecciona el JSON del Service Account';
-    if OpenDialog.Execute then begin
-      if LoadStringsFromFile(OpenDialog.FileName, FileLines) then begin
-        Combined := '';
-        for i := 0 to GetArrayLength(FileLines) - 1 do
-          Combined := Combined + FileLines[i] + #13#10;
-        PageJson.Values[0] := Combined;
-      end else begin
-        MsgBox('No se pudo leer el archivo.', mbError, MB_OK);
-      end;
+  SelectedFile := '';
+  if GetOpenFileName(
+       'Selecciona el JSON del Service Account',
+       SelectedFile,
+       '',
+       'JSON Service Account (*.json)|*.json|Todos|*.*',
+       'json') then begin
+    if LoadStringsFromFile(SelectedFile, FileLines) then begin
+      Combined := '';
+      for i := 0 to GetArrayLength(FileLines) - 1 do
+        Combined := Combined + FileLines[i] + #13#10;
+      PageJson.Values[0] := Combined;
+    end else begin
+      MsgBox('No se pudo leer el archivo.', mbError, MB_OK);
     end;
-  finally
-    OpenDialog.Free;
   end;
 end;
 

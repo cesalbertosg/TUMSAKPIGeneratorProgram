@@ -5,14 +5,19 @@ REM Output: dist\KPIGenerator-Setup.exe
 
 setlocal
 
-REM Ruta tipica de Inno Setup 6 (ajustar si esta instalado en otro lado)
-set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+REM Detectar Inno Setup 6 o 7+ en rutas tipicas
+set ISCC=
+if exist "C:\Program Files\Inno Setup 7\ISCC.exe" set ISCC="C:\Program Files\Inno Setup 7\ISCC.exe"
+if exist "C:\Program Files (x86)\Inno Setup 7\ISCC.exe" set ISCC="C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
+if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files\Inno Setup 6\ISCC.exe"
+if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
-if not exist %ISCC% (
-    echo [ERR] No se encontro ISCC.exe en %ISCC%
+if "%ISCC%"=="" (
+    echo [ERR] No se encontro ISCC.exe en ninguna ruta tipica.
     echo Instala Inno Setup desde https://jrsoftware.org/isdl.php
     exit /b 1
 )
+echo [INFO] Usando %ISCC%
 
 REM Verificar que el bundle de Python embebido existe
 if not exist "bundle\python-3.14.4-embed-amd64.zip" (

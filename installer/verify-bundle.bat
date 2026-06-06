@@ -7,7 +7,7 @@ setlocal enabledelayedexpansion
 
 REM SHA-256 publicado en python.org/downloads para Python 3.14.4 embed amd64
 REM IMPORTANTE: actualizar este hash cuando se cambie de version
-set PYTHON_SHA256_EXPECTED=PLACEHOLDER_ACTUALIZAR_AL_DESCARGAR
+set PYTHON_SHA256_EXPECTED=CDA80A9B1E75C0F1B4F9872CA1B417F0D19BCE32FACC811AEA9180E70FAD5FB9
 
 set PYTHON_ZIP=bundle\python-3.14.4-embed-amd64.zip
 

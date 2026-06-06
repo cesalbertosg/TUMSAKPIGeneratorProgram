@@ -31,8 +31,10 @@ OutputBaseFilename=KPIGenerator-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-WizardImageFile=assets\wizard-image.bmp
-WizardSmallImageFile=assets\header.bmp
+; WizardImageFile y WizardSmallImageFile son opcionales — si no estan, Inno
+; usa sus imagenes default. Descomenta cuando agregues los .bmp a assets/.
+; WizardImageFile=assets\wizard-image.bmp
+; WizardSmallImageFile=assets\header.bmp
 SetupIconFile=bundle\icons\kpi.ico
 UninstallDisplayIcon={app}\bundle\icons\kpi.ico
 
@@ -59,17 +61,12 @@ Filename: "{app}\python\python.exe"; Parameters: "-m kpi_generator"; \
   Flags: nowait postinstall skipifsilent
 
 [Code]
-// Includes de helpers en Pascal
+// Includes de helpers en Pascal.
+// IMPORTANTE: las variables globales del wizard estan declaradas dentro de
+// credentials_wizard.pas para que las funciones del mismo archivo las vean.
 #include "pascal\repo_downloader.pas"
 #include "pascal\credentials_wizard.pas"
 #include "pascal\env_writer.pas"
-
-// --- Variables globales para el wizard de credenciales ---
-var
-  PageJson: TInputQueryWizardPage;
-  PageSheetsId: TInputQueryWizardPage;
-  PageConfirm: TOutputMsgWizardPage;
-  JsonFilePath: string;
 
 // --- Setup del wizard ---
 procedure InitializeWizard;
