@@ -397,7 +397,13 @@ class DataProcessor:
         cedula_lookup = df_cedulas.copy()
         cedula_lookup['Unidades'] = cedula_lookup['Unidades'].astype(str)
         cedula_lookup['Fecha Cedula_dt_date'] = cedula_lookup['Fecha Cedula_dt'].dt.date
-        
+
+        # Restringir a las columnas necesarias para el merge: la cédula desde
+        # Sheets puede traer columnas-metadato extra (ej. "Denominación") que
+        # colisionan con columnas de df_trips y rompen cols_to_keep más abajo
+        # (pandas las renombra a _x/_y al hacer merge).
+        cedula_lookup = cedula_lookup[Config.COLUMNS["units"] + ['Fecha Cedula_dt_date']]
+
         df_trips['Equipo Motriz'] = df_trips['Equipo Motriz'].astype(str)
         
         # Merge con cédulas
