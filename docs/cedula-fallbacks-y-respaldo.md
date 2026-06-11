@@ -145,40 +145,77 @@ load_cedula_from_sheet(sheet_id)
 df (Sheet)
    │
    ▼
-save_cedula_as_completa(df, cedulas_folder)
-   │  por cada Fecha Cedula_dt única en df:
-   │    si NO existe ya un archivo "Cedula DDMMYYYY*.xlsx" para esa fecha
-   │      → escribe "Cedula DDMMYYYY Completa.xlsx"
-   │    si ya existe (cualquier sufijo reconocido por parse_cedula_filename)
-   │      → no toca el archivo (preserva ediciones manuales)
+derive_date_range(trips_file)
+   │  primer y ultimo viaje del zmov seleccionado → (fecha_min, fecha_max)
    ▼
-load_local_cedulas_for_crossfill(cedulas_folder)
-   │  lee todos los "Cedula DDMMYYYY*.xlsx" de la carpeta (best-effort,
-   │  aplica los mismos CEDULA_COLUMN_ALIASES), devuelve df_local
-   │  (vacío si la carpeta no existe o no hay archivos válidos — no aborta)
+df = df[(Fecha Cedula_dt >= fecha_min) & (Fecha Cedula_dt <= fecha_max)]
+   │  descarta dias del Sheet fuera del periodo del zmov (p.ej. el resto
+   │  del mes en curso sin viajes todavia)
    ▼
-crossfill_cedulas(df, df_local)
-   │  merge por (Unidades, Fecha Cedula_dt)
-   │  para cada columna de units[1:] + units_extra presente en ambos:
-   │    si df (Sheet) viene vacío/NaN y df_local trae valor → lo toma de
-   │    df_local. Nunca pisa un valor ya presente en df.
-   │  cada fill → inconsistencia "Completado por cruce con cédula local
-   │  guardada"
+fill_missing_dates(df)
+   │  idempotente: solo rellena huecos dentro del rango ya acotado —
+   │  la "foto" del corte se asume sin cambios hacia adelante, pero nunca
+   │  se genera un dia fuera de [fecha_min, fecha_max]
    ▼
+df (acotado al rango del zmov)
+   │
+   ▼
+¿cedulas_folder?
+   │
+   ├─ NO → log WARN "Sin carpeta de cédulas seleccionada: no se genera
+   │        respaldo local 'Completa' ni se completa Operador/No Operador/
+   │        Estatus Operador/Observaciones..." — df se usa tal cual, sin
+   │        abortar el pipeline
+   │
+   └─ SI ▼
+      save_cedula_as_completa(df, cedulas_folder)
+         │  por cada Fecha Cedula_dt única en df (ya acotado al zmov):
+         │    si NO existe ya un archivo "Cedula DDMMYYYY*.xlsx" para esa fecha
+         │      → escribe "Cedula DDMMYYYY Completa.xlsx"
+         │    si ya existe (cualquier sufijo reconocido por parse_cedula_filename)
+         │      → no toca el archivo (preserva ediciones manuales)
+         ▼
+      load_local_cedulas_for_crossfill(cedulas_folder)
+         │  lee todos los "Cedula DDMMYYYY*.xlsx" de la carpeta (best-effort,
+         │  aplica los mismos CEDULA_COLUMN_ALIASES), devuelve df_local
+         │  (vacío si la carpeta no existe o no hay archivos válidos — no aborta)
+         ▼
+      crossfill_cedulas(df, df_local)
+         │  merge por (Unidades, Fecha Cedula_dt)
+         │  para cada columna de units[1:] + units_extra presente en ambos:
+         │    si df (Sheet) viene vacío/NaN y df_local trae valor → lo toma de
+         │    df_local. Nunca pisa un valor ya presente en df.
+         │  cada fill → inconsistencia "Completado por cruce con cédula local
+         │  guardada"
+         ▼
 df final → _apply_cedula_fallbacks (capa universal, sección anterior)
 ```
 
 Notas:
 
+- El acotamiento a `[fecha_min, fecha_max]` (Cambio "Pendiente 2", ya
+  implementado) corre **siempre** para la fuente `sheets`, con o sin carpeta
+  de cédulas — `save_cedula_as_completa` jamás escribe un archivo "Completa"
+  para un día sin viajes todavía en el zmov. Si `derive_date_range` falla
+  (zmov sin fechas válidas), se loggea WARN y `df` se usa sin acotar.
+- `dias_mes`/`dias_corrientes`/`dias_restantes` (`PeriodContext.from_trips`,
+  usados por Tendencia/Objetivos) se calculan por separado a partir del mes
+  del periodo del zmov — **no** dependen del rango acotado de la cédula. El
+  acotamiento solo afecta qué días de cédula se guardan/usan como "foto";
+  los totales mensuales para proyecciones siguen cubriendo el mes completo.
 - `save_cedula_as_completa` corre **antes** de
   `load_local_cedulas_for_crossfill`, así que en una carpeta vacía el primer
-  run escribe el snapshot actual del Sheet como "Completa" y luego se lee de
-  vuelta — el cruce es esencialmente un no-op la primera vez (`df` y
-  `df_local` coinciden). El cruce cobra valor en runs posteriores, o cuando
-  la carpeta ya tenía archivos "Completa" históricos (sin `units_extra`, por
-  el motivo descrito en "Fuente de verdad").
+  run escribe el snapshot actual del Sheet (ya acotado) como "Completa" y
+  luego se lee de vuelta — el cruce es esencialmente un no-op la primera vez
+  (`df` y `df_local` coinciden). El cruce cobra valor en runs posteriores, o
+  cuando la carpeta ya tenía archivos "Completa" históricos (sin
+  `units_extra`, por el motivo descrito en "Fuente de verdad").
 - `save_cedula_as_completa` **nunca sobrescribe ni borra** archivos
   existentes — preserva ediciones manuales de Beto.
+- Si no se selecciona carpeta de cédulas, la GUI (`validate_inputs`) muestra
+  un diálogo de confirmación que explica el efecto (sin respaldo local, sin
+  cruce) y permite al usuario decidir si continuar o regresar a seleccionar
+  una carpeta — el uso sin carpeta nunca es implícito.
 
 ## Hoja "Inconsistencias" (Cambio 6)
 
@@ -189,42 +226,51 @@ hoja `Inconsistencias` (Excel) / tab `Inconsistencias` (Sheets), columnas
 inconsistencias en la corrida, la hoja/tab simplemente no se crea
 (`write_workbook`/`sync_workbook_to_sheets` omiten DataFrames vacíos).
 
-## Pendientes (no implementados todavía)
+## Decisiones cerradas (antes "Pendientes")
 
-### 1. Carpeta "Cedulas" por defecto bajo `output_path`
+### 1. Carpeta de cédulas no seleccionada — confirmación explícita en GUI
 
-`_load_cedulas_by_source` (rama `sheets`) solo ejecuta respaldo local + cruce
-`if cedulas_folder:` (`processor.py:192`). Si el usuario no selecciona
-carpeta de cédulas, hoy **no hay respaldo ni cruce** — el Sheet se usa tal
-cual, sin generar "Completa" ni aprovechar históricos.
+Beto rechazó la idea de un default implícito (`Path(output_path) /
+"Cedulas"`): *"no dejes implicito el uso"*. En su lugar, si la fuente es
+`sheets` y no se seleccionó carpeta de cédulas:
 
-Pendiente: si `cedulas_folder` está vacío, usar/crear `Path(output_path) /
-"Cedulas"` como carpeta de respaldo.
+- La GUI (`validate_inputs`, `gui/app.py`) muestra un `askyesno` que explica
+  el efecto (sin respaldo "Completa", sin cruce de
+  Operador/No Operador/Estatus Operador/Observaciones) y deja decidir al
+  usuario si continúa sin carpeta o regresa a seleccionar una.
+- Independientemente de la GUI, `_load_cedulas_by_source` registra un WARN
+  ("Sin carpeta de cédulas seleccionada: ...") — visible también en CLI/
+  headless, donde no hay diálogo posible.
 
 ### 2. Acotar el rango de fechas al de `zmov`
 
-`load_cedula_from_sheet` lee **todas** las columnas-fecha presentes en el
-Sheet (puede incluir días posteriores al último viaje real, ej. el resto del
-mes en curso), y `save_cedula_as_completa` escribe un "Completa" por cada una
-de esas fechas — incluyendo días sin viajes todavía.
+Implementado: `_load_cedulas_by_source` (rama `sheets`) usa
+`derive_date_range(trips_file)` para acotar `df` (Sheet) a `Fecha Cedula_dt`
+∈ `[fecha_min, fecha_max]` (primer a último viaje del zmov) **antes** de
+`save_cedula_as_completa`, y luego aplica `fill_missing_dates` (idempotente,
+solo rellena huecos dentro de ese rango ya acotado). Así:
 
-Pendiente: usar `derive_date_range(trips_file)` (ya existe, hoy solo en la
-rama `db`) para:
-
-- Filtrar `df` (Sheet) a `Fecha Cedula_dt` ∈ `[fecha_min, fecha_max]` del
-  zmov antes de `save_cedula_as_completa` — la última cédula/"foto" debe
-  corresponder a la fecha del último viaje del zmov, no al último día del
-  mes.
-- Asegurar (vía `fill_missing_dates`, que ya existe) que ese rango quede
-  completo sin huecos.
-- En cualquier caso, el programa nunca borra archivos de cédula existentes;
-  solo completa los días del rango que falten.
+- `save_cedula_as_completa` nunca escribe "Completa" para un día sin viajes
+  todavía — *"LAS CEDULAS que escribe 'save_cedula_as_completa' SOLO DEBEN
+  SER LAS QUE PERTENEZCAN AL RANGO DE FECHAS QUE ABARCA EL ZMOV
+  SELECCIONADO"* (Beto).
+- La última cédula/"foto" corresponde a la fecha del último viaje, no al
+  último día del mes — pero esa "foto" se asume sin cambios desde el corte
+  hacia adelante para fines de proyección (lógica de Tendencia, sin cambios:
+  no genera asignaciones futuras, solo proyecta con el último estado
+  conocido).
+- `dias_mes`/`dias_corrientes`/`dias_restantes` (`PeriodContext.from_trips`)
+  siguen calculándose por separado a partir del mes del periodo — no se ven
+  afectados por este acotamiento.
+- Si `derive_date_range` falla (`DateRangeError`), se loggea WARN y `df` se
+  usa sin acotar (no aborta el pipeline).
+- El programa nunca borra archivos de cédula existentes; solo escribe los
+  días del rango que falten.
 
 ### 3. Carpeta de respaldo vacía / sin archivos previos
 
-Ya cubierto por el comportamiento actual, sin cambios pendientes: si
-`load_local_cedulas_for_crossfill` devuelve vacío, `crossfill_cedulas` no se
-ejecuta y `df` (snapshot del Sheet, ya forward-fillado por
-`fill_missing_dates`) se usa tal cual para todo el período — equivalente a
-"tratar la cédula de Sheets actual como si no hubiera sufrido cambios todo el
-periodo". No aplica a la fuente `db`.
+Cubierto sin cambios: si `load_local_cedulas_for_crossfill` devuelve vacío,
+`crossfill_cedulas` no se ejecuta y `df` (snapshot del Sheet, ya acotado y
+forward-fillado) se usa tal cual para todo el período acotado — equivalente
+a "tratar la cédula de Sheets actual como si no hubiera sufrido cambios todo
+el periodo". No aplica a la fuente `db`.

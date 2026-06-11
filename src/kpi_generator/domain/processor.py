@@ -26,6 +26,7 @@ from kpi_generator.domain.opcedula import OpcedulaAggregator, post_calcular_tend
 from kpi_generator.domain.period import PeriodContext
 from kpi_generator.io import excel as excel_io
 from kpi_generator.io import sheets as sheets_io
+from kpi_generator.io.date_range import DateRangeError, derive_date_range
 
 # --- Columnas Tier 1 deadweight de la hoja Viajes ---
 # llaveremolque y EqAsignados son intermediarios solo usados internamente para
@@ -189,6 +190,25 @@ class DataProcessor:
             if df is None:
                 return None, pd.DataFrame()
 
+            # Acotar al rango real del zmov (primer a ultimo viaje): el respaldo
+            # local nunca debe generar "Completa" para dias sin viajes todavia.
+            # Si el sheet no llega hasta fecha_max, fill_missing_dates extiende
+            # el ultimo snapshot conocido (la "foto" no cambia desde el corte).
+            try:
+                fecha_min, fecha_max = derive_date_range(trips_file)
+                mask = (
+                    (df['Fecha Cedula_dt'].dt.date >= fecha_min)
+                    & (df['Fecha Cedula_dt'].dt.date <= fecha_max)
+                )
+                df = df[mask].copy()
+                if df.empty:
+                    self.log("Cédula Sheets sin datos en el rango de viajes", LogLevel.ERROR, "ERR")
+                    return None, pd.DataFrame()
+                df = excel_io.fill_missing_dates(df)
+                self.log(f"Cédula Sheets acotada al rango de viajes: {fecha_min} a {fecha_max}", code="RNG")
+            except DateRangeError as e:
+                self.log(f"No se pudo acotar cédula Sheets al rango de viajes: {e}", LogLevel.ERROR, "WARN")
+
             if cedulas_folder:
                 excel_io.save_cedula_as_completa(df, cedulas_folder, self.log)
                 df_local = excel_io.load_local_cedulas_for_crossfill(cedulas_folder, self.log)
@@ -199,6 +219,13 @@ class DataProcessor:
                             unidad, fecha, campo, valor_aplicado='(desde cédula local)',
                             motivo='Completado por cruce con cédula local guardada',
                         )
+            else:
+                self.log(
+                    "Sin carpeta de cédulas seleccionada: no se genera respaldo local "
+                    "'Completa' ni se completa Operador/No Operador/Estatus Operador/"
+                    "Observaciones desde cédulas guardadas previamente",
+                    LogLevel.ERROR, "WARN",
+                )
 
             return df, pd.DataFrame()
 
@@ -213,7 +240,6 @@ class DataProcessor:
                 return None, pd.DataFrame()
             try:
                 from kpi_generator.io.cedulas_db import load_cedulas_from_db
-                from kpi_generator.io.date_range import derive_date_range
                 from kpi_generator.io.postgres import PostgresConnectionError
 
                 fecha_min, fecha_max = derive_date_range(trips_file)

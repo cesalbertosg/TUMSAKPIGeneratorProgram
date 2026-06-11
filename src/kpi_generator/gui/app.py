@@ -497,7 +497,19 @@ class KPIGeneratorGUI:
         if not Path(self.paths["output"].get()).is_dir():
             messagebox.showerror("Error de Directorio", "El directorio de salida no es válido")
             return False
-                
+
+        if source == 'sheets' and not self.paths["cedulas"].get().strip():
+            return messagebox.askyesno(
+                "Cédulas sin carpeta de respaldo",
+                "No seleccionaste una carpeta de cédulas.\n\n"
+                "Sin carpeta, el programa:\n"
+                "- NO genera respaldo local 'Cedula DDMMYYYY Completa.xlsx'.\n"
+                "- NO completa Operador / No Operador / Estatus Operador / "
+                "Observaciones desde cédulas guardadas previamente (cruce).\n\n"
+                "¿Deseas continuar SIN carpeta de cédulas?\n\n"
+                "Elige 'No' para regresar y seleccionar una carpeta.",
+            )
+
         return True
     
     def start_processing(self):
