@@ -133,6 +133,7 @@ Adicionalmente sincroniza con Google Sheets configurado en `.env` (7 tabs, espej
 - [`docs/diccionario-viajes.md`](docs/diccionario-viajes.md) — diccionario completo de las 74 columnas de la hoja `Viajes` (significado, tipo, origen, rol Looker, cómo agregar)
 - [`docs/uso-looker.md`](docs/uso-looker.md) — playbook Looker: catálogo del dashboard actual + 8 visualizaciones propuestas + anti-patrones
 - [`docs/migracion-cedulas-db.md`](docs/migracion-cedulas-db.md) — migración a PostgreSQL como fuente de cédulas
+- [`docs/cedula-fallbacks-y-respaldo.md`](docs/cedula-fallbacks-y-respaldo.md) — normalización/fallbacks universales de cédula (`_apply_cedula_fallbacks`) y respaldo local + cruce para fuente `sheets`
 - [`docs/cambios.md`](docs/cambios.md) — changelog
 
 ## Contexto
