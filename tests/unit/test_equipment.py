@@ -20,6 +20,7 @@ from kpi_generator.domain.equipment import (
     EquipmentAggregator,
     categoria_status,
     clasificar_tipo_equipo,
+    normalize_text,
 )
 from kpi_generator.domain.period import PeriodContext
 
@@ -97,9 +98,31 @@ def test_clasificar_tipo_equipo(tipo_unidad: str, esperado: str) -> None:
     ('Status Desconocido Futuro', 'Otros Status'),
     ('', 'Otros Status'),
     (None, 'Otros Status'),
+    # Acentos (Excel/Sheets) -> canonico sin acento
+    ('Gestoría', 'Gestoria'),
+    ('Sin Asignación', 'Sin Asignacion'),
+    # Caso "a" minuscula (Excel/Sheets) vs canonico "A" mayuscula
+    ('Puesto a Punto', 'Puesto A Punto'),
+    ('puesto a punto', 'Puesto A Punto'),
+    # Espacios extra
+    ('  Operando  ', 'Operando'),
 ])
 def test_categoria_status(estatus: str, esperado: str) -> None:
     assert categoria_status(estatus or '') == esperado
+
+
+# ---------- normalize_text ----------
+
+@pytest.mark.parametrize("value,esperado", [
+    ('Gestoría', 'Gestoria'),
+    ('Sin Asignación', 'Sin Asignacion'),
+    ('Núñez', 'Nunez'),
+    ('TRACTOCAMIÓN FULL', 'TRACTOCAMION FULL'),
+    ('Operando', 'Operando'),
+    ('', ''),
+])
+def test_normalize_text(value: str, esperado: str) -> None:
+    assert normalize_text(value) == esperado
 
 
 # ---------- Asignacion vigente motriz ----------

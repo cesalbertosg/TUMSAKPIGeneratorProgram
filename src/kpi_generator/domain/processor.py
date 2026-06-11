@@ -8,6 +8,7 @@ listos para escribir a Excel y Google Sheets.
 from __future__ import annotations
 
 import calendar
+import re
 from collections import Counter
 from datetime import datetime, timedelta
 from functools import lru_cache
@@ -20,7 +21,7 @@ import pandas as pd
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.change_tracker import ChangeTracker
 from kpi_generator.domain.comodato import ComodatoManager
-from kpi_generator.domain.equipment import EquipmentAggregator
+from kpi_generator.domain.equipment import CLAVE_CATEGORIA_A_TIPO_UNIDAD, EquipmentAggregator, normalize_text
 from kpi_generator.domain.opcedula import OpcedulaAggregator, post_calcular_tendencia
 from kpi_generator.domain.period import PeriodContext
 from kpi_generator.io import excel as excel_io
@@ -41,6 +42,7 @@ SHEET_NAMES = {
     'objetivos': 'Objetivos',
     'promedio': 'Promedio KM por Unidad', # antes: 'PromedioKMunitOps'
     'audit': 'Cedulas Rellenadas',
+    'inconsistencias': 'Inconsistencias',
 }
 
 # Nombres de tabs en Google Sheets — mantenemos consistencia con Excel desde v0.4.0.
@@ -54,6 +56,7 @@ SHEETS_TAB_NAMES = {
     'por_operacion': 'Por Operación',
     'objetivos': 'Objetivos',
     'promedio': 'Promedio KM por Unidad',
+    'inconsistencias': 'Inconsistencias',
 }
 
 
@@ -66,14 +69,31 @@ class DataProcessor:
         self._objective_cache = {}
         self._cedula_cache = {}
         self._stats = {'total_assigned': 0, 'periods_processed': 0}
+        self._inconsistencias: List[dict] = []
         self.comodato_manager = ComodatoManager()
         self.change_tracker = ChangeTracker(log_callback)
-    
+
     def log(self, message: str, level: LogLevel = LogLevel.INFO, code: str = None):
         """Sistema de logging simplificado con códigos."""
         if level.value <= self.log_level.value:
             prefix = f"[{code}]" if code else ""
             self.log_func(f"{prefix} {message}")
+
+    def _registrar_inconsistencia(self, unidad, fecha, campo: str, valor_aplicado,
+                                   motivo: str, valor_original=None) -> None:
+        """Registra un fill/fallback/cruce aplicado durante la carga de cédulas.
+
+        Acumulado en `self._inconsistencias`; `run_pipeline` lo vuelca a la
+        hoja "Inconsistencias" del Excel y del Sheets de salida.
+        """
+        self._inconsistencias.append({
+            'Unidad': unidad,
+            'Fecha': fecha,
+            'Campo': campo,
+            'Valor Original': valor_original,
+            'Valor Aplicado': valor_aplicado,
+            'Motivo': motivo,
+        })
     
     def load_daily_cedulas(self, cedulas_folder: str) -> Optional[pd.DataFrame]:
         """Delegado a `io.excel.load_daily_cedulas` (refactor v0.4.3)."""
@@ -123,15 +143,25 @@ class DataProcessor:
             )
             if df_cedulas is None:
                 return None
+            df_cedulas = self._apply_cedula_fallbacks(df_cedulas, data['trips'])
             data['cedulas'] = df_cedulas
             data['cedulas_audit'] = df_cedulas_audit  # vacío si source != "db"
-            
+
             if objectives_file and Path(objectives_file).exists():
                 df_obj = pd.read_excel(objectives_file)
                 missing = [col for col in Config.COLUMNS["objectives"] if col not in df_obj.columns]
                 if missing:
                     self.log(f"Error objetivos - Columnas faltantes: {missing}", LogLevel.ERROR, "ERR")
                     return None
+                # Normaliza acentos/Ñ y mayúsculas para que 'Operación Cedula'
+                # haga match con el campo calculado desde la cédula
+                # (ver _get_operacion_cedula / _apply_cedula_fallbacks).
+                df_obj['Operación Cedula'] = (
+                    df_obj['Operación Cedula'].astype(str).str.strip().map(normalize_text).str.upper()
+                )
+                df_obj['Gerencia'] = (
+                    df_obj['Gerencia'].astype(str).str.strip().map(normalize_text).str.upper()
+                )
                 data['objectives'] = df_obj
                 self.log(f"Objetivos: {len(df_obj)} registros", LogLevel.DEBUG, "OK")
             else:
@@ -156,6 +186,20 @@ class DataProcessor:
             self.log("Fuente cédulas: Google Sheets", code="SRC")
             sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
             df = self.load_cedula_from_sheets(sheet_id, cedulas_tab)
+            if df is None:
+                return None, pd.DataFrame()
+
+            if cedulas_folder:
+                excel_io.save_cedula_as_completa(df, cedulas_folder, self.log)
+                df_local = excel_io.load_local_cedulas_for_crossfill(cedulas_folder, self.log)
+                if not df_local.empty:
+                    df, crossfill_log = excel_io.crossfill_cedulas(df, df_local, self.log)
+                    for unidad, fecha, campo in crossfill_log:
+                        self._registrar_inconsistencia(
+                            unidad, fecha, campo, valor_aplicado='(desde cédula local)',
+                            motivo='Completado por cruce con cédula local guardada',
+                        )
+
             return df, pd.DataFrame()
 
         if source == "db":
@@ -195,6 +239,132 @@ class DataProcessor:
         self.log("Fuente cédulas: Excel local", code="SRC")
         df = self.load_daily_cedulas(cedulas_folder)
         return df, pd.DataFrame()
+
+    def _apply_cedula_fallbacks(self, df_cedulas: pd.DataFrame, df_trips: pd.DataFrame) -> pd.DataFrame:
+        """Normaliza texto y completa columnas categóricas faltantes de la cédula.
+
+        1. Quita acentos/Ñ y espacios de Gerencia/Operación/Tipo de Unidad/
+           Circuito/Operando + columnas `units_extra` presentes — necesario
+           porque "Operación Cedula" (calculado a partir de estas columnas
+           en `_get_operacion_cedula`) se usa para emparejar contra
+           `Operación Cedula` del archivo de objetivos.
+        2. Rellena Gerencia/Operación/Circuito faltantes con
+           `Config.CEDULA_FIELD_DEFAULTS`.
+        3. Rellena Tipo de Unidad faltante desde el histórico de viajes
+           (última `ClaveCategoria` vía `CLAVE_CATEGORIA_A_TIPO_UNIDAD`) o,
+           si la unidad no tiene viajes, desde el prefijo del número
+           económico (`Config.CEDULA_TIPO_UNIDAD_POR_PREFIJO`).
+        4. Si la cédula trae alguna columna de `Config.COLUMNS["units_extra"]`
+           (Operador, No Operador, Estatus Operador, Observaciones), asegura
+           las 4 y aplica ffill/bfill por Unidades; lo que siga vacío cae a
+           "Sin Info". Si NINGUNA está presente (fuente db/excel clásico),
+           se omite este paso por completo.
+
+        Cada ajuste se registra vía `_registrar_inconsistencia`.
+        """
+        if df_cedulas.empty:
+            return df_cedulas
+
+        df = df_cedulas.copy()
+
+        # Columnas categoricas/texto que esta funcion puede leer o escribir.
+        # Forzar dtype 'object' evita que una columna 100% NaN quede como
+        # float64 y pandas reviente (TypeError) al asignarle un string mas
+        # adelante (defaults, "Sin Info", Tipo de Unidad inferido, etc.).
+        text_cols = ['Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito', 'Operando'] \
+            + Config.COLUMNS["units_extra"]
+        for col in text_cols:
+            if col in df.columns and df[col].dtype != object:
+                df[col] = df[col].astype(object)
+
+        # --- 1. Normalizar texto (acentos, Ñ, espacios) ---
+        extra_cols = [c for c in Config.COLUMNS["units_extra"] if c in df.columns]
+        for col in ['Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito', 'Operando'] + extra_cols:
+            if col not in df.columns:
+                continue
+            normalized = df[col].astype(str).str.strip().map(normalize_text)
+            normalized = normalized.replace({'nan': '', 'None': ''})
+            if col == 'Operando':
+                # Sin default propio: una cadena vacia se preserva tal cual
+                # (categoria_status la trata como 'Otros Status').
+                df[col] = normalized.astype(object)
+            else:
+                # `.astype(object)` evita que una columna 100% NaN quede en
+                # float64 (ver comentario sobre text_cols arriba).
+                df[col] = normalized.replace('', np.nan).astype(object)
+
+        # --- 2. Defaults para Gerencia/Operación/Circuito ---
+        for campo, default in Config.CEDULA_FIELD_DEFAULTS.items():
+            if campo not in df.columns:
+                df[campo] = pd.Series(np.nan, index=df.index, dtype=object)
+            mask = df[campo].isna()
+            for idx in df.index[mask]:
+                self._registrar_inconsistencia(
+                    df.at[idx, 'Unidades'], df.at[idx, 'Fecha Cedula_dt'], campo,
+                    valor_aplicado=default, motivo='Faltante en cédula',
+                )
+            df.loc[mask, campo] = default
+
+        # --- 3. Tipo de Unidad faltante ---
+        if 'Tipo de Unidad' not in df.columns:
+            df['Tipo de Unidad'] = pd.Series(np.nan, index=df.index, dtype=object)
+        mask_tipo = df['Tipo de Unidad'].isna()
+        if mask_tipo.any():
+            unit_to_tipo: Dict[str, str] = {}
+            if not df_trips.empty and 'ClaveCategoria' in df_trips.columns:
+                trips_sorted = df_trips.sort_values('Fecha creación')
+                ultimas_claves = trips_sorted.groupby('Equipo Motriz')['ClaveCategoria'].last()
+                for unidad, clave in ultimas_claves.items():
+                    tipo = CLAVE_CATEGORIA_A_TIPO_UNIDAD.get(str(clave).upper())
+                    if tipo:
+                        unit_to_tipo[str(unidad).strip().upper()] = tipo
+
+            for idx in df.index[mask_tipo]:
+                unidad_key = str(df.at[idx, 'Unidades']).strip().upper()
+                fecha = df.at[idx, 'Fecha Cedula_dt']
+                if unidad_key in unit_to_tipo:
+                    tipo = unit_to_tipo[unidad_key]
+                    motivo = 'Tipo de Unidad inferido de histórico de viajes'
+                else:
+                    prefijo_match = re.match(r'^([A-Z])\d', unidad_key)
+                    prefijo = prefijo_match.group(1) if prefijo_match else None
+                    tipo = Config.CEDULA_TIPO_UNIDAD_POR_PREFIJO.get(prefijo, 'DESCONOCIDO')
+                    motivo = 'Tipo de Unidad inferido de prefijo de número económico'
+                df.at[idx, 'Tipo de Unidad'] = tipo
+                self._registrar_inconsistencia(
+                    df.at[idx, 'Unidades'], fecha, 'Tipo de Unidad',
+                    valor_aplicado=tipo, motivo=motivo,
+                )
+
+        # --- 4. units_extra: ffill/bfill por Unidades, resto -> "Sin Info" ---
+        if extra_cols:
+            for col in Config.COLUMNS["units_extra"]:
+                if col not in df.columns:
+                    df[col] = pd.Series(np.nan, index=df.index, dtype=object)
+
+            df = df.sort_values(['Unidades', 'Fecha Cedula_dt'])
+            for col in Config.COLUMNS["units_extra"]:
+                before_na = df[col].isna()
+                df[col] = df.groupby('Unidades')[col].transform(lambda s: s.ffill().bfill())
+
+                filled_mask = before_na & df[col].notna()
+                for idx in df.index[filled_mask]:
+                    self._registrar_inconsistencia(
+                        df.at[idx, 'Unidades'], df.at[idx, 'Fecha Cedula_dt'], col,
+                        valor_aplicado=df.at[idx, col], motivo='Completado por ffill/bfill',
+                    )
+
+                remaining = df[col].isna()
+                for idx in df.index[remaining]:
+                    self._registrar_inconsistencia(
+                        df.at[idx, 'Unidades'], df.at[idx, 'Fecha Cedula_dt'], col,
+                        valor_aplicado='Sin Info', motivo='Sin información disponible',
+                    )
+                df.loc[remaining, col] = 'Sin Info'
+
+            df = df.reset_index(drop=True)
+
+        return df
 
     @lru_cache(maxsize=256)
     def _get_operacion_cedula(self, operacion: str, circuito: str, tipo_unidad: str) -> str:
@@ -255,17 +425,6 @@ class DataProcessor:
             self.log("Sin unidades fantasma detectadas", code="PHANTOM")
             return unit_mapping
         
-        # Mapeo de ClaveCategoria a Tipo de Unidad
-        clave_to_tipo = {
-            'CAMIONETA': 'CAMIONETA',
-            'SENCILLO': 'TRACTOCAMION SENCILLO',
-            'FULL': 'TRACTOCAMION FULL',
-            'TORTHON': 'TORTHON',
-            'THORTON': 'TORTHON',
-            'PATIO': 'TRACTOCAMION PATIO',
-            'DOBLE': 'TRACTOCAMION DOBLE'
-        }
-        
         phantom_count = 0
         for unit_id in phantom_units:
             # Buscar información de esta unidad en viajes
@@ -281,7 +440,7 @@ class DataProcessor:
                 clave_categoria = str(clave_categoria.iloc[0]).upper()
             
             # Determinar Tipo de Unidad desde ClaveCategoria
-            tipo_unidad = clave_to_tipo.get(clave_categoria, f'TRACTOCAMION {clave_categoria}')
+            tipo_unidad = CLAVE_CATEGORIA_A_TIPO_UNIDAD.get(clave_categoria, f'TRACTOCAMION {clave_categoria}')
             
             # Crear operación cédula: POR ASIGNAR + Tipo
             # Como el circuito es "POR ASIGNAR" (circuito especial), usa el tipo de unidad
@@ -695,7 +854,8 @@ class DataProcessor:
     def upload_to_sheets(self, df_resumen: pd.DataFrame, df_kpi: pd.DataFrame,
                          df_processed: pd.DataFrame, df_changes: pd.DataFrame,
                          df_opcedula: pd.DataFrame, df_objectives: pd.DataFrame,
-                         df_promedio: pd.DataFrame) -> bool:
+                         df_promedio: pd.DataFrame,
+                         df_inconsistencias: pd.DataFrame = None) -> bool:
         """Delegado a `io.sheets.sync_workbook_to_sheets` (refactor v0.4.3).
 
         Arma el dict {tab_name: df} respetando el orden canonico de `SHEETS_TAB_NAMES`
@@ -709,6 +869,7 @@ class DataProcessor:
             SHEETS_TAB_NAMES['por_operacion']: df_opcedula,
             SHEETS_TAB_NAMES['objetivos']: df_objectives,
             SHEETS_TAB_NAMES['promedio']: df_promedio,
+            SHEETS_TAB_NAMES['inconsistencias']: df_inconsistencias,
         }
         return sheets_io.sync_workbook_to_sheets(Config.SHEETS_ID, dfs, self.log)
 
@@ -806,6 +967,7 @@ class DataProcessor:
     def save_results(self, df_kpi: pd.DataFrame, df_processed: pd.DataFrame, df_changes: pd.DataFrame,
                      df_opcedula: pd.DataFrame, output_path: str, df_objectives: pd.DataFrame = None,
                      df_promedio: pd.DataFrame = None, df_cedulas_audit: pd.DataFrame = None,
+                     df_inconsistencias: pd.DataFrame = None,
                      upload_sheets: bool = True) -> Optional[str]:
         """Genera el Excel KPI y opcionalmente sincroniza a Google Sheets (v0.4.3).
 
@@ -814,7 +976,8 @@ class DataProcessor:
         subida a Sheets se delegan a `io.excel.write_workbook` y `upload_to_sheets`.
 
         Orden de hojas: Resumen → Por Equipo → Viajes → Resumen de Cambios →
-        Por Operación → Objetivos → Promedio KM por Unidad → Cedulas Rellenadas.
+        Por Operación → Objetivos → Promedio KM por Unidad → Cedulas Rellenadas →
+        Inconsistencias.
         """
         # Drops de deadweight (Tier 1) sin tocar la logica de calculo
         df_processed = self._drop_deadweight(df_processed, TRIP_DEADWEIGHT_COLS)
@@ -846,6 +1009,9 @@ class DataProcessor:
             rellenadas = (df_cedulas_audit['Origen'] == 'forward_fill').sum()
             self.log(f"Hoja {SHEET_NAMES['audit']}: {rellenadas} días por forward-fill "
                      f"de {len(df_cedulas_audit)} totales", code="AUDIT")
+        if df_inconsistencias is not None and not df_inconsistencias.empty:
+            self.log(f"Hoja {SHEET_NAMES['inconsistencias']}: {len(df_inconsistencias)} "
+                     f"ajustes registrados", code="INCONS")
 
         # Orquestar escritura: dict ordenado -> io.excel
         workbook_sheets = {
@@ -857,6 +1023,7 @@ class DataProcessor:
             SHEET_NAMES['objetivos']: df_objectives,
             SHEET_NAMES['promedio']: df_promedio,
             SHEET_NAMES['audit']: df_cedulas_audit,
+            SHEET_NAMES['inconsistencias']: df_inconsistencias,
         }
         full_path = excel_io.write_workbook(workbook_sheets, output_path, self.log)
         if full_path is None:
@@ -868,6 +1035,7 @@ class DataProcessor:
                 df_resumen, df_kpi, df_processed_formatted, df_changes, df_opcedula,
                 df_objectives if df_objectives is not None else pd.DataFrame(),
                 df_promedio if df_promedio is not None else pd.DataFrame(),
+                df_inconsistencias if df_inconsistencias is not None else pd.DataFrame(),
             )
 
         return str(full_path)
@@ -964,11 +1132,17 @@ class DataProcessor:
 
             df_promedio = self._build_promedio_km_sheet_v050(df_opcedula, df_kpi)
 
+            df_inconsistencias = pd.DataFrame(
+                self._inconsistencias,
+                columns=['Unidad', 'Fecha', 'Campo', 'Valor Original', 'Valor Aplicado', 'Motivo'],
+            )
+
             result_path = self.save_results(
                 df_kpi, df_processed, df_changes, df_opcedula, output_path,
                 df_objectives=data['objectives'],
                 df_promedio=df_promedio,
                 df_cedulas_audit=data.get('cedulas_audit'),
+                df_inconsistencias=df_inconsistencias,
                 upload_sheets=upload_sheets,
             )
 

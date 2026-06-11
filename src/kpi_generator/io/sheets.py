@@ -104,7 +104,10 @@ def load_cedula_from_sheet(sheet_id: str, log: LogCallback,
         records = []
         for row in unit_rows:
             padded = row + [''] * max(0, len(header) - len(row))
-            meta = {header[i]: padded[i].strip() for i in meta_col_indices}
+            meta = {
+                Config.CEDULA_COLUMN_ALIASES.get(header[i], header[i]): padded[i].strip()
+                for i in meta_col_indices
+            }
             for col_idx in date_col_indices:
                 records.append({
                     **meta,

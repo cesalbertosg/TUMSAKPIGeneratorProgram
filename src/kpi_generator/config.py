@@ -44,7 +44,35 @@ class Config:
             "Cantidad Litros Real", "Precio Unitario Real", "Importe Total Real", "StatusVale",
         ],
         "units": ["Unidades", "Gerencia", "Operación", "Tipo de Unidad", "Circuito", "Operando"],
+        "units_extra": ["Operador", "No Operador", "Estatus Operador", "Observaciones"],
         "objectives": ["Gerencia", "Operación Cedula", "Objetivo KM", "Objetivo Viajes"],
+    }
+
+    # Alias de nombres de columna por fuente (case-sensitive a propósito:
+    # 'Estatus' del archivo "Completa" — códigos cortos A/I/B/S — es distinto
+    # de 'ESTATUS' — vocabulario de status, igual que Operando).
+    CEDULA_COLUMN_ALIASES = {
+        'Unidad': 'Unidades',
+        'ESTATUS': 'Operando',
+        'Estatus': 'Estatus Operador',
+        'OPERADOR': 'Operador',
+        'NO OPERADOR': 'No Operador',
+        'OBSERVACIONES': 'Observaciones',
+    }
+
+    # Valores por defecto cuando un campo categórico de cédula viene vacío.
+    CEDULA_FIELD_DEFAULTS = {
+        'Gerencia': 'Pendiente',
+        'Operación': 'SIN ASIGNAR',
+        'Circuito': 'TERCERO',
+    }
+
+    # Heurística por prefijo de número económico cuando no hay info de viajes
+    # para inferir 'Tipo de Unidad'.
+    CEDULA_TIPO_UNIDAD_POR_PREFIJO = {
+        'L': 'CAMIONETA',
+        'C': 'TORTHON',
+        'T': 'SENCILLO',
     }
 
     SPECIAL_CIRCUITS = {'DEDICADO', 'POR ASIGNAR', 'SPRINTER', 'TERCERO', 'VENTA'}

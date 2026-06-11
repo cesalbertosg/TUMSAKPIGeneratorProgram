@@ -24,6 +24,7 @@ Reglas clave (ver `docs/v0.5.0-design.md`):
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
 
@@ -31,6 +32,38 @@ import numpy as np
 import pandas as pd
 
 from kpi_generator.domain.period import PeriodContext
+
+
+def normalize_text(value: str) -> str:
+    """Quita acentos y convierte Ñ/ñ -> N/n, preservando mayúsculas/minúsculas.
+
+    NFKD descompone los caracteres acentuados en caracter base + diacritico
+    combinante (incluida la Ñ, que se descompone en N + tilde); al descartar
+    los diacriticos queda solo el caracter base.
+
+    Valores no-string (NaN, None) se devuelven sin modificar: `.astype(str)`
+    sobre una columna numerica con NaN puede preservar el NaN como float en
+    vez de convertirlo a la cadena "nan", y `.map()` lo pasaria tal cual.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    return ''.join(
+        c for c in unicodedata.normalize('NFKD', value)
+        if not unicodedata.combining(c)
+    )
+
+
+# ---------- Mapeo de ClaveCategoria (viajes) -> Tipo de Unidad (cedula) ----------
+
+CLAVE_CATEGORIA_A_TIPO_UNIDAD = {
+    'CAMIONETA': 'CAMIONETA',
+    'SENCILLO': 'TRACTOCAMION SENCILLO',
+    'FULL': 'TRACTOCAMION FULL',
+    'TORTHON': 'TORTHON',
+    'THORTON': 'TORTHON',
+    'PATIO': 'TRACTOCAMION PATIO',
+    'DOBLE': 'TRACTOCAMION DOBLE',
+}
 
 # ---------- Catalogos de tipo de equipo ----------
 
@@ -64,24 +97,29 @@ STATUS_CANONICOS = (
 )
 SIN_ASIGNACION_BD = 'Sin Asignacion'  # valor literal en BD `estatus_2`
 
+# Lookup case-insensitive: vocabulario Excel/Sheets trae acentos (ya cubiertos
+# por normalize_text) y diferencias de mayusculas (ej. "Puesto a Punto" vs
+# canonico "Puesto A Punto"); este lookup resuelve ambos sin alias manuales.
+_STATUS_LOOKUP = {s.lower(): s for s in STATUS_CANONICOS}
+_STATUS_LOOKUP[SIN_ASIGNACION_BD.lower()] = SIN_ASIGNACION_BD
+
 
 def categoria_status(estatus: str) -> str:
-    """Mapea un valor de `estatus_2` BD a la categoria de conteo.
+    """Mapea un valor de status (BD, Excel o Sheets) a la categoria de conteo.
 
     Devuelve uno de:
     - `'Sin Asignacion'`
     - uno de los 8 STATUS_CANONICOS
     - `'Otros Status'` (resiliencia: Activo, Baja, Inhabilitado, etc., o cualquier
       string no contemplado en el futuro).
+
+    Acentos (Gestoría -> Gestoria) y diferencias de mayusculas (Puesto a
+    Punto -> Puesto A Punto) se normalizan antes del match.
     """
     if not estatus:
         return 'Otros Status'
-    e = estatus.strip()
-    if e == SIN_ASIGNACION_BD:
-        return 'Sin Asignacion'
-    if e in STATUS_CANONICOS:
-        return e
-    return 'Otros Status'
+    e = normalize_text(estatus.strip())
+    return _STATUS_LOOKUP.get(e.lower(), 'Otros Status')
 
 
 # ---------- Contrato de salida ----------
