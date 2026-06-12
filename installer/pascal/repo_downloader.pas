@@ -1,30 +1,25 @@
 // repo_downloader.pas
-// Descarga del ZIP del repo desde GitHub usando curl (Windows 10+ trae curl.exe).
-// curl con TLS estricto: solo HTTPS, sin downgrade.
+// Helpers para configurar el Python embedded post-extraccion.
 
-function DownloadRepoZip(const Url: string; const DestPath: string): Boolean;
-var
-  ResultCode: Integer;
-  CurlParams: string;
-begin
-  CurlParams := Format('-L --tlsv1.2 --proto =https --fail --silent --show-error -o "%s" "%s"', [DestPath, Url]);
-  Exec(ExpandConstant('{sys}\curl.exe'), CurlParams, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := (ResultCode = 0) and FileExists(DestPath);
-end;
-
-// --- Extraer un ZIP usando PowerShell Expand-Archive ---
-// Sincrono (ewWaitUntilTerminated) — Shell.Application.CopyHere era asincrono
-// y dejaba la carpeta vacia cuando el installer continuaba al siguiente paso.
+// Wrapper alrededor de la API nativa ExtractArchive de Inno Setup 7.
+// La firma usada aqui es la del scripting reference (test): 5 parametros con
+// resultado de tipo Integer (codigo HRESULT, 0 = OK).
+// Extraccion via tar.exe + cmd.exe como wrapper.
+// Por que no ExtractArchive (Inno 7): la lib interna rechaza algunos ZIPs estandar
+// con "formato no soportado". tar de BSD (System32\tar.exe en Win10 1803+) los maneja.
+// Por que cmd.exe: permite invocar tar.exe de System32 sin que Inno haga
+// File System Redirection a SysWOW64. cmd.exe respeta {win}\System32\... literal.
 procedure ExtractZip(const ZipPath: string; const DestDir: string);
 var
   ResultCode: Integer;
-  PsCmd: string;
+  CmdParams: string;
 begin
   ForceDirectories(DestDir);
-  PsCmd := Format('-NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath ''%s'' -DestinationPath ''%s'' -Force"', [ZipPath, DestDir]);
-  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), PsCmd, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // cmd.exe /c "tar.exe -x -f ZIP -C DEST"   — quotes anidados con ""
+  CmdParams := Format('/c ""%s\System32\tar.exe" -x -f "%s" -C "%s""', [ExpandConstant('{win}'), ZipPath, DestDir]);
+  Exec(ExpandConstant('{sys}\cmd.exe'), CmdParams, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if ResultCode <> 0 then begin
-    MsgBox(Format('Falló la extracción de %s a %s (codigo %d).', [ZipPath, DestDir, ResultCode]), mbError, MB_OK);
+    MsgBox(Format('Fallo la extraccion de %s a %s (codigo %d).' + #13#10 + 'Verifica que tar.exe esta disponible (Windows 10 1803+).', [ZipPath, DestDir, ResultCode]), mbError, MB_OK);
     Abort;
   end;
 end;

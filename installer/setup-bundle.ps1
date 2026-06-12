@@ -18,6 +18,7 @@
 [CmdletBinding()]
 param(
     [string]$PythonVersion = "3.14.4",
+    [string]$RepoTag = "v0.5.1",
     [switch]$Force  # Re-descargar incluso si ya existe
 )
 
@@ -139,7 +140,35 @@ if ((Test-Path $TkAddonZip) -and -not $Force) {
     Write-Host "[OK  ] $TkAddonZip ($TkSize)" -ForegroundColor Green
 }
 
-# --- 6. Icono ---
+# --- 6. Repo ZIP via git archive (el repo en GitHub es privado) ---
+Write-Host ""
+Write-Host "=== 6. Repo ZIP local desde tag $RepoTag ===" -ForegroundColor Magenta
+$RepoZipPath = Join-Path $BundleDir "repo.zip"
+$RepoRoot = Split-Path -Parent $ScriptDir  # ../KPI Generator Program (raiz del repo git)
+
+if ((Test-Path $RepoZipPath) -and -not $Force) {
+    Write-Host "[SKIP] Ya existe: $RepoZipPath" -ForegroundColor Yellow
+} else {
+    Push-Location $RepoRoot
+    try {
+        # git archive produce un ZIP con el contenido del tag (sin metadata .git).
+        # El prefix imita el comportamiento del archive de GitHub
+        # (TUMSAKPIGeneratorProgram-<tag-sin-v>/...).
+        $tagWithoutV = $RepoTag -replace '^v', ''
+        $prefix = "TUMSAKPIGeneratorProgram-$tagWithoutV/"
+        Write-Host "[GIT ] git archive --prefix=$prefix $RepoTag" -ForegroundColor Cyan
+        & git archive --format=zip --prefix=$prefix --output=$RepoZipPath $RepoTag
+        if ($LASTEXITCODE -ne 0) {
+            throw "git archive fallo con exit $LASTEXITCODE"
+        }
+        $sz = "{0:N1} MB" -f ((Get-Item $RepoZipPath).Length / 1MB)
+        Write-Host "[OK  ] $RepoZipPath ($sz)" -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+# --- 7. Icono ---
 Write-Host ""
 Write-Host "=== 4. Icono ===" -ForegroundColor Magenta
 if (-not (Test-Path $IconPath)) {

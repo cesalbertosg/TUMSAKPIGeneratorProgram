@@ -33,6 +33,53 @@ begin
   SaveStringsToFile(JsonPath, Lines, False);
 end;
 
+// --- Backup/restore de .env y secrets/ a {tmp} (para reinstalacion/actualizacion) ---
+// Permite borrar repo/ entero (necesario para RenameFile sobre directorio nuevo)
+// y restaurar credenciales despues.
+
+function GetCredentialsBackupDir(): string;
+begin
+  Result := ExpandConstant('{tmp}\creds-backup');
+end;
+
+procedure BackupCredentialsToTmp(const RepoDir: string);
+var
+  BackupDir: string;
+  ResultCode: Integer;
+  EnvSrc, EnvDst, SecretsSrc, SecretsDst: string;
+begin
+  BackupDir := GetCredentialsBackupDir();
+  ForceDirectories(BackupDir);
+  EnvSrc := RepoDir + '\.env';
+  EnvDst := BackupDir + '\.env';
+  SecretsSrc := RepoDir + '\secrets';
+  SecretsDst := BackupDir + '\secrets';
+  // Solo respaldar si hay algo que respaldar (primera instalacion no tiene).
+  if FileExists(EnvSrc) then CopyFile(EnvSrc, EnvDst, False);
+  if DirExists(SecretsSrc) then begin
+    Exec(ExpandConstant('{sys}\cmd.exe'), Format('/c xcopy "%s" "%s" /E /Y /Q /I', [SecretsSrc, SecretsDst]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
+procedure RestoreCredentialsFromTmp(const RepoDir: string);
+var
+  BackupDir: string;
+  ResultCode: Integer;
+  EnvSrc, EnvDst, SecretsSrc, SecretsDst: string;
+begin
+  BackupDir := GetCredentialsBackupDir();
+  if not DirExists(BackupDir) then Exit;
+  EnvSrc := BackupDir + '\.env';
+  EnvDst := RepoDir + '\.env';
+  SecretsSrc := BackupDir + '\secrets';
+  SecretsDst := RepoDir + '\secrets';
+  if FileExists(EnvSrc) then CopyFile(EnvSrc, EnvDst, False);
+  if DirExists(SecretsSrc) then begin
+    ForceDirectories(SecretsDst);
+    Exec(ExpandConstant('{sys}\cmd.exe'), Format('/c xcopy "%s" "%s" /E /Y /Q /I', [SecretsSrc, SecretsDst]), '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
+end;
+
 // --- ACL restrictivo: solo el usuario actual lee/escribe ---
 // Usa icacls.exe (incluido en Windows).
 //   /inheritance:r        -> remueve permisos heredados
