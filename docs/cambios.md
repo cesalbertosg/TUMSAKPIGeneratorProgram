@@ -1,5 +1,79 @@
 # Changelog
 
+## 0.5.1 — 2026-06-11 (Cedula: fuente versatil + normalizacion + respaldo local + hoja Inconsistencias)
+
+Bug original resuelto (`KeyError: "['Denominacion'] not in index"` con fuente
+Sheets, commit `e2f936b`) mas el trabajo mas amplio que se deriva de ahi.
+
+### Cedula formato "Completa" + normalizacion
+
+- `Config.CEDULA_COLUMN_ALIASES` traduce columnas del Sheet/archivo "Completa"
+  (`Unidad`, `ESTATUS`, `Estatus`, `OPERADOR`, `NO OPERADOR`, `OBSERVACIONES`) a
+  nombres canonicos (`Unidades`, `Operando`, `Estatus Operador`, `Operador`,
+  `No Operador`, `Observaciones`) en `load_daily_cedulas` y
+  `load_cedula_from_sheet`.
+- `normalize_text` (`domain/equipment.py`, NFKD sin combinantes) quita acentos
+  y resuelve `Ñ`/`ñ` en `Gerencia`, `Operacion`, `Tipo de Unidad`, `Circuito`,
+  `Operando`, `units_extra` y en `Operacion Cedula`/`Gerencia` del archivo de
+  objetivos — el match `Operacion Cedula` cedula↔objetivos ya no se rompe por
+  un acento de mas en cualquiera de los dos lados.
+- `categoria_status` hace match case-insensitive contra el vocabulario
+  canonico (`Puesto a Punto` y `Puesto A Punto` resuelven igual).
+
+### `_apply_cedula_fallbacks` (universal, todas las fuentes)
+
+Nuevo paso en `load_data`, despues de `_load_cedulas_by_source`: normaliza
+texto, rellena `Gerencia`/`Operacion`/`Circuito` con
+`Config.CEDULA_FIELD_DEFAULTS`, infiere `Tipo de Unidad` faltante (historico
+de viajes via `CLAVE_CATEGORIA_A_TIPO_UNIDAD`, o prefijo del numero economico
+via `Config.CEDULA_TIPO_UNIDAD_POR_PREFIJO`), y completa `units_extra`
+(`Operador`/`No Operador`/`Estatus Operador`/`Observaciones`) con ffill/bfill
+por unidad + `"Sin Info"` como ultimo recurso. Documentado en detalle en
+[`docs/cedula-fallbacks-y-respaldo.md`](cedula-fallbacks-y-respaldo.md).
+
+### Respaldo local "Completa" + cruce (fuente `sheets`)
+
+- `save_cedula_as_completa` guarda la cedula del dia (`Cedula DDMMYYYY
+  Completa.xlsx`) sin sobrescribir archivos existentes (preserva ediciones
+  manuales).
+- `load_local_cedulas_for_crossfill` + `crossfill_cedulas` completan
+  `units_extra`/`units` faltantes desde cedulas "Completa" guardadas
+  previamente, sin pisar valores ya presentes.
+- **Acotamiento al rango del zmov**: `_load_cedulas_by_source` (rama
+  `sheets`) usa `derive_date_range(trips_file)` (primer a ultimo viaje) para
+  filtrar la cedula del Sheet antes de escribir/cruzar — nunca se genera
+  "Completa" para dias sin viajes todavia. `fill_missing_dates` solo rellena
+  huecos dentro de ese rango ya acotado (la "foto" del corte se asume sin
+  cambios hacia adelante). `dias_mes`/`dias_corrientes`/`dias_restantes`
+  (`PeriodContext`, usados por Tendencia/Objetivos) siguen calculandose por
+  separado a partir del mes completo.
+- **Sin carpeta de cedulas seleccionada**: la GUI (`validate_inputs`) muestra
+  una confirmacion explicando que no habra respaldo ni cruce, dejando decidir
+  al usuario; en CLI/headless se registra el mismo aviso como WARN. El uso sin
+  carpeta nunca es implicito.
+
+### Hoja "Inconsistencias"
+
+Cada fallback/cruce aplicado (defaults, inferencia de Tipo de Unidad,
+ffill/bfill, "Sin Info", cruce con cedula local) se registra y se vuelca a una
+hoja `Inconsistencias` en el Excel y el Sheets de salida (omitida si no hubo
+inconsistencias).
+
+### Fixes de dtype pandas 3
+
+Columnas creadas o normalizadas en `_apply_cedula_fallbacks` y
+`crossfill_cedulas` se fuerzan a `dtype object` antes de asignaciones
+parciales (`.loc`/`.at`) — evita `TypeError: Invalid value for dtype 'str'`
+bajo `infer_string=True`.
+
+### Tests
+
+135 tests verdes (`pytest -q tests/unit`), incluye nuevos casos para
+`normalize_text`/`categoria_status`, `_apply_cedula_fallbacks`,
+`save_cedula_as_completa`/`load_local_cedulas_for_crossfill`/
+`crossfill_cedulas`, match de objetivos con acentos, y acotamiento de cedula
+Sheets al rango del zmov.
+
 ## 0.5.0 — 2026-06-04 (Reforma de output: 1 fila por equipo, dias asignado/activo)
 
 Cambio mayor en la semantica de las tres hojas principales: **rompe contratos
