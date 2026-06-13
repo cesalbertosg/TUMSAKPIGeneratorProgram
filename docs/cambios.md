@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.3 — 2026-06-13 (Alias de cedula: UNIDAD/ESTATUS2)
+
+Verificacion con datos reales de junio 2026 (fuente `excel`, carpeta "Cedulas
+completas") encontro headers inconsistentes entre archivos `Cedula DDMMYYYY
+Completa.xlsx`: algunos usan `Unidad`/`ESTATUS`, otros `Unidad`/`ESTATUS2`, y
+uno `UNIDAD`/`ESTATUS2`. `ESTATUS2` trae el mismo vocabulario que `ESTATUS`
+(Operando/Disponible/Taller/Sin Asignacion/...).
+
+`Config.CEDULA_COLUMN_ALIASES` (`config.py`) ahora tambien mapea
+`UNIDAD -> Unidades` y `ESTATUS2 -> Operando`.
+
 ## 0.5.2 — 2026-06-13 (Fantasma del dia: Pendiente/POR ASIGNAR en huecos puntuales de cedula)
 
 `_assign_cedula_info_optimized` (`domain/processor.py`) agrupaba dos casos

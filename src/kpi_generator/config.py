@@ -53,7 +53,9 @@ class Config:
     # de 'ESTATUS' — vocabulario de status, igual que Operando).
     CEDULA_COLUMN_ALIASES = {
         'Unidad': 'Unidades',
+        'UNIDAD': 'Unidades',
         'ESTATUS': 'Operando',
+        'ESTATUS2': 'Operando',
         'Estatus': 'Estatus Operador',
         'OPERADOR': 'Operador',
         'NO OPERADOR': 'No Operador',
