@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.2 — 2026-06-13 (Fantasma del dia: Pendiente/POR ASIGNAR en huecos puntuales de cedula)
+
+`_assign_cedula_info_optimized` (`domain/processor.py`) agrupaba dos casos
+distintos de "sin match en cedula" bajo el mismo tratamiento:
+
+- **Desfase temporal de captura**: la cedula no tiene NINGUNA fila para la
+  fecha D (para ninguna unidad) -> se mantiene la asignacion vigente de
+  `unit_mapping` (sin cambios).
+- **Fantasma del dia**: la cedula SI tiene filas para D (de otras unidades),
+  pero esta unidad en particular no aparece ese dia -> antes heredaba su
+  asignacion vigente de OTRO dia; ahora se marca `Gerencia=PENDIENTE`,
+  `Operacion cedula=POR ASIGNAR {TIPO}`, `Operando=SIN ASIGNACION`, igual que
+  una unidad sin cedula (`add_phantom_units_from_trips`). `Tipo de Unidad` se
+  toma de `unit_mapping` (la unidad si esta en cedula otros dias).
+
+`ChangeTracker` (INGRESO/EGRESO en "Resumen de Cambios") y
+`EquipmentAggregator` (hoja "Por Equipo") ya manejaban correctamente estos
+huecos por unidad -- sin cambios.
+
+### Tests
+
+137 tests verdes (`pytest -q tests/unit`), incluye 2 casos nuevos en
+`test_assign_cedula_info.py` (fantasma del dia vs. desfase temporal).
+
 ## 0.5.1 — 2026-06-11 (Cedula: fuente versatil + normalizacion + respaldo local + hoja Inconsistencias)
 
 Bug original resuelto (`KeyError: "['Denominacion'] not in index"` con fuente

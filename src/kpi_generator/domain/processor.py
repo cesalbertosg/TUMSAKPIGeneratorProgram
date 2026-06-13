@@ -582,6 +582,7 @@ class DataProcessor:
         cedula_lookup = df_cedulas.copy()
         cedula_lookup['Unidades'] = cedula_lookup['Unidades'].astype(str)
         cedula_lookup['Fecha Cedula_dt_date'] = cedula_lookup['Fecha Cedula_dt'].dt.date
+        cedula_dates = set(cedula_lookup['Fecha Cedula_dt_date'])
 
         # Restringir a las columnas necesarias para el merge: la cédula desde
         # Sheets puede traer columnas-metadato extra (ej. "Denominación") que
@@ -600,18 +601,35 @@ class DataProcessor:
             how='left'
         )
         
-        # Para unidades sin match en cédulas, usar unit_mapping (unidades fantasma)
+        # Para unidades sin match en cédulas, distinguir:
+        # - desfase temporal: la fecha no esta en la cedula para NINGUNA
+        #   unidad -> usar unit_mapping (asignacion vigente), como hoy.
+        # - fantasma del dia: la fecha SI esta en la cedula (de otras
+        #   unidades), pero esta unidad no aparece ese dia -> Pendiente/
+        #   POR ASIGNAR para ese dia, igual que las unidades sin cedula de
+        #   add_phantom_units_from_trips.
         mask_sin_cedula = merged['Operación'].isna()
+        mask_fantasma_dia = mask_sin_cedula & merged['Fecha creación_date'].isin(cedula_dates)
+        mask_desfase = mask_sin_cedula & ~mask_fantasma_dia
 
-        if mask_sin_cedula.any():
-            phantom_units = merged.loc[mask_sin_cedula, 'Equipo Motriz']
+        if mask_desfase.any():
+            phantom_units = merged.loc[mask_desfase, 'Equipo Motriz']
             for col_dest, info_key in [
                 ('Gerencia', 'Gerencia'), ('Operación', 'Operación'),
                 ('Tipo de Unidad', 'Tipo de Unidad'), ('Circuito', 'Circuito'), ('Operando', 'Estatus')
             ]:
                 col_map = {uid: unit_mapping[uid][info_key] for uid in phantom_units.unique() if uid in unit_mapping}
-                merged.loc[mask_sin_cedula, col_dest] = phantom_units.map(col_map).values
-        
+                merged.loc[mask_desfase, col_dest] = phantom_units.map(col_map).values
+
+        if mask_fantasma_dia.any():
+            fantasma_units = merged.loc[mask_fantasma_dia, 'Equipo Motriz']
+            tipo_map = {uid: unit_mapping[uid]['Tipo de Unidad'] for uid in fantasma_units.unique() if uid in unit_mapping}
+            merged.loc[mask_fantasma_dia, 'Tipo de Unidad'] = fantasma_units.map(tipo_map).values
+            merged.loc[mask_fantasma_dia, 'Gerencia'] = 'PENDIENTE'
+            merged.loc[mask_fantasma_dia, 'Operación'] = 'POR ASIGNAR'
+            merged.loc[mask_fantasma_dia, 'Circuito'] = 'POR ASIGNAR'
+            merged.loc[mask_fantasma_dia, 'Operando'] = 'SIN ASIGNACIÓN'
+
         # Calcular Operación cedula
         merged['Operación cedula'] = merged.apply(
             lambda row: self._get_operacion_cedula(
