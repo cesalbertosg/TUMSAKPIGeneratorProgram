@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.4 — 2026-06-16 (Historial Drive API para columnas estáticas en fuente Sheets)
+
+`load_cedula_from_sheet` (`io/sheets.py`) leía Gerencia/Operación/Circuito/Tipo
+de Unidad del estado actual del sheet — todas las fechas del mes heredaban el
+valor vigente al momento de la corrida, causando 0 cambios operacionales
+detectados por `ChangeTracker` cuando la fuente de cédulas era `sheets`.
+
+Ahora, antes del forward-fill, se consulta el historial de revisiones de Drive
+API v3 (`_list_revisions` + `_fetch_revision_raw`). Para cada fecha presente en
+el DataFrame se selecciona la revisión más reciente con `modifiedTime <=
+23:59:59 UTC de ese día` y se parcha el bloque Gerencia/Operación/Circuito/Tipo
+con los valores de ese snapshot (`_patch_static_from_revisions`).
+
+- Nuevo parámetro `use_revision_history: bool = True` en
+  `load_cedula_from_sheet` (backward-compatible).
+- Se reutilizan `live_all_rows` para la revisión más reciente (evita descarga
+  duplicada).
+- Se agrupa por `revision_id` para minimizar llamadas HTTP.
+- `_fetch_revision_raw` suprime `UserWarning` de openpyxl al parsear el XLSX
+  exportado (columna `Num_Viaje` contiene números de orden SAP ~10^9 que
+  openpyxl marca erróneamente como fechas seriales inválidas).
+- Se declaran `google-api-python-client>=2.100` y `requests>=2.31` como
+  dependencias explícitas en `pyproject.toml`.
+
+Limitación conocida: Drive API conserva solo ~14 revisiones del período actual
+(09/06–16/06 en junio 2026). Fechas anteriores a la revisión más antigua
+usan esa revisión como aproximación.
+
 ## 0.5.3 — 2026-06-13 (Alias de cedula: UNIDAD/ESTATUS2)
 
 Verificacion con datos reales de junio 2026 (fuente `excel`, carpeta "Cedulas
