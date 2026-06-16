@@ -250,11 +250,20 @@ class DataProcessor:
                     return None, pd.DataFrame()
                 return df, df_audit
             except PostgresConnectionError as e:
-                if Config.FALLBACK_ON_DB_ERROR and cedulas_folder:
-                    self.log(f"BD inaccesible ({e}); fallback a Excel: {cedulas_folder}",
+                if Config.FALLBACK_ON_DB_ERROR:
+                    # Cadena: db → sheets → excel
+                    self.log(f"BD inaccesible ({e}); fallback: sheets → excel",
                              LogLevel.ERROR, "WARN")
-                    df = self.load_daily_cedulas(cedulas_folder)
-                    return df, pd.DataFrame()
+                    df_fb, audit_fb = self._load_cedulas_by_source(
+                        'sheets', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+                    )
+                    if df_fb is not None and not df_fb.empty:
+                        return df_fb, audit_fb
+                    self.log("Fallback Sheets falló; intentando Excel local",
+                             LogLevel.ERROR, "WARN")
+                    return self._load_cedulas_by_source(
+                        'excel', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+                    )
                 self.log(f"BD inaccesible y sin fallback: {e}", LogLevel.ERROR, "ERR")
                 return None, pd.DataFrame()
             except Exception as e:
