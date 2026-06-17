@@ -118,6 +118,8 @@ def load_cedulas_from_db(
     """
     schema = schema or Config.PG_CEDULA_SCHEMA
     table = table or Config.PG_CEDULA_TABLE
+    if not table:
+        raise ValueError("PG_CEDULA_TABLE no configurado en .env")
 
     log_func(f"[DB] Consultando {schema}.{table} para rango "
              f"{fecha_min.isoformat()} a {fecha_max.isoformat()}")

@@ -29,10 +29,15 @@ def get_connection() -> Iterator[psycopg2.extensions.connection]:
     Levanta `PostgresConnectionError` si las credenciales están incompletas
     o si la conexión falla (timeout, host inalcanzable, auth, etc.).
     """
-    if not Config.PG_CEDULA_USER or not Config.PG_CEDULA_PASSWORD:
+    missing = [v for v, k in [
+        ("PG_CEDULA_HOST", Config.PG_CEDULA_HOST),
+        ("PG_CEDULA_DB", Config.PG_CEDULA_DB),
+        ("PG_CEDULA_USER", Config.PG_CEDULA_USER),
+        ("PG_CEDULA_PASSWORD", Config.PG_CEDULA_PASSWORD),
+    ] if not k]
+    if missing:
         raise PostgresConnectionError(
-            "Credenciales Postgres incompletas. Configurar PG_CEDULA_USER y "
-            "PG_CEDULA_PASSWORD en .env"
+            f"Variables Postgres sin configurar en .env: {', '.join(missing)}"
         )
 
     # statement_timeout corta queries colgadas (default 60s). Se aplica a NIVEL

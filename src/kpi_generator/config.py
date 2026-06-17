@@ -1,7 +1,8 @@
 """Configuración centralizada del sistema KPI Generator.
 
-Carga variables sensibles desde `.env` cuando existe; cae a defaults
-hardcoded para preservar compatibilidad con el monolito original.
+Carga variables desde `.env`. Las variables identificadoras (IDs de Sheets,
+host/BD de Postgres) no tienen default — deben estar definidas en `.env`.
+Las variables operativas (rutas, modos, timeouts) conservan defaults seguros.
 """
 
 from __future__ import annotations
@@ -82,8 +83,8 @@ class Config:
     CREDENTIALS_PATH = str(
         _project_root() / os.getenv("GOOGLE_CREDENTIALS_PATH", "secrets/google_service_account.json")
     )
-    SHEETS_ID = os.getenv("SHEETS_ID_KPI", "1sv8P004Ej85D_GF4YwEmoBO1XqWR1KYdGOSb1FJWM8Y")
-    CEDULA_SHEET_ID = os.getenv("SHEETS_ID_CEDULAS", "18lw2_Rv-j_vwXTwXXGKX5-BZ_8t8MNfz6IHuLaIKBf0")
+    SHEETS_ID = os.getenv("SHEETS_ID_KPI", "")
+    CEDULA_SHEET_ID = os.getenv("SHEETS_ID_CEDULAS", "")
     SHEETS_SCOPES = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
@@ -120,13 +121,13 @@ class Config:
             return False
 
     # --- Conexión PostgreSQL Cédula DG ---
-    PG_CEDULA_HOST = os.getenv("PG_CEDULA_HOST", "172.17.1.4")
+    PG_CEDULA_HOST = os.getenv("PG_CEDULA_HOST", "")
     PG_CEDULA_PORT = int(os.getenv("PG_CEDULA_PORT", "5432"))
-    PG_CEDULA_DB = os.getenv("PG_CEDULA_DB", "cedula_direccion")
+    PG_CEDULA_DB = os.getenv("PG_CEDULA_DB", "")
     PG_CEDULA_USER = os.getenv("PG_CEDULA_USER", "")
     PG_CEDULA_PASSWORD = os.getenv("PG_CEDULA_PASSWORD", "")
     PG_CEDULA_SCHEMA = os.getenv("PG_CEDULA_SCHEMA", "public")
-    PG_CEDULA_TABLE = os.getenv("PG_CEDULA_TABLE", "cedula_unidades")
+    PG_CEDULA_TABLE = os.getenv("PG_CEDULA_TABLE", "")
 
     OUTPUT_COLUMNS = [
         'Fecha Ultima modif', 'Denominación del equipo', 'Tipo de equipo', 'Operación cedula',
