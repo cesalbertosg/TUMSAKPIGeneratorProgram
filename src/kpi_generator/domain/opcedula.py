@@ -1,22 +1,31 @@
-"""Agregador por OpCedula: 1 fila por OpCedula vigente.
+"""Agregador por OpCedula: 1 fila por OpCedula vigente + 1 fila 'Pendiente'.
 
-Reform v0.5.0 de la hoja `Por Operacion`. Toma el DataFrame de equipos
-producido por `EquipmentAggregator.aggregate()` y lo agrega por
-`Operacion Cedula`.
+Reform v0.5.0 de la hoja `Por Operacion`, extendida en v0.6.0 con atribucion
+dia-por-dia. Toma `df_equipos` (salida de `EquipmentAggregator.aggregate()`)
+para identidad/status/dias por asignacion vigente, y opcionalmente
+`df_detalle_opcedula` (salida de `aggregate_detalle_opcedula()`) para KM/
+Diesel/Viajes/Motrices Utilizadas atribuidos a la OpCedula que realmente
+tenia la unidad cada dia (no la vigente al cierre).
 
 Reglas:
-- Una fila por OpCedula que tenga ≥1 motriz titular (asignacion vigente).
-- Contadores de status (`Operando`, `Taller`, ...) son COUNT de motrices
-  titulares con esa Estatus vigente.
-- Metricas operativas (KM, Viajes, Diesel) son SUM desde df_equipos.
+- Una fila por OpCedula vigente de ≥1 motriz, + 1 fila 'Pendiente' que
+  consolida motrices sin vigente real (POR ASIGNAR) y cualquier KM/Viajes
+  historico atribuido a una OpCedula huerfana (no vigente de nadie al corte).
+- Contadores de status (`Operando`, `Taller`, ...) y `Motrices Titulares` son
+  por asignacion VIGENTE (sin cambios por el split dia-por-dia).
+- `Motrices Utilizadas` = unidades distintas con ≥1 viaje real (no comodato)
+  atribuido a esa OpCedula segun el detalle historico.
+- KM/Diesel/Viajes/Rendimiento/Densidad: SUM desde `df_detalle_opcedula` si
+  se provee (dia-por-dia); si no, fallback a SUM desde `df_equipos` (legacy,
+  usado por tests sin distincion historica).
 - `Objetivo KM` consolidado = Objetivo KM Diario de la OpCedula × motrices
   titulares × dias corrientes.
 - `Tendencia KM` = Σ Tendencia KM individual (se calcula despues, en post-pass).
 - `Promedio KM/dia/unidad` = KM Total / Σ Dias Asignado (sirve como insumo
   para calcular `Tendencia KM` individual en el post-pass del processor).
 
-Tambien se calcula `_post_calcular_tendencia_equipos` que toma df_equipos +
-df_opcedula y rellena `Tendencia KM` / `Tendencia Viajes` en cada equipo.
+Tambien se calcula `post_calcular_tendencia` que toma df_equipos + df_opcedula
+y rellena `Tendencia KM` / `Tendencia Viajes` en cada equipo y su agregado.
 """
 
 from __future__ import annotations
@@ -31,8 +40,8 @@ from kpi_generator.domain.period import PeriodContext
 OPCEDULA_OUTPUT_COLS = [
     # Identidad
     'Operacion Cedula', 'Gerencia', 'Operacion', 'Circuito', 'Tipo de Unidad',
-    # Conteos por status (motrices titulares al corte)
-    'Motrices Titulares',
+    # Conteos por status (motrices titulares al corte) + uso real dia-por-dia
+    'Motrices Titulares', 'Motrices Utilizadas',
     'Operando', 'Disponible', 'Sin Operador', 'Taller',
     'Gestoria', 'Descanso', 'Rescate', 'Puesto A Punto', 'Otros Status',
     # Dias unidad
@@ -65,10 +74,17 @@ class OpcedulaAggregator:
     def __init__(self, df_equipos: pd.DataFrame,
                  obj_mapping: Optional[Dict[str, Dict[str, float]]],
                  period: PeriodContext,
+                 df_detalle_opcedula: Optional[pd.DataFrame] = None,
                  log_callback=print):
         self.df_equipos = df_equipos
         self.obj_mapping = obj_mapping or {}
         self.period = period
+        # Detalle motriz x OpCedula historica (dia-por-dia), salida de
+        # `EquipmentAggregator.aggregate_detalle_opcedula()`. Si es None, KM/
+        # Diesel/Viajes/Motrices Utilizadas se calculan desde `df_equipos`
+        # (asignacion vigente), igual que antes de v0.6.0 — usado por tests
+        # que no necesitan la distincion dia-por-dia.
+        self.df_detalle_opcedula = df_detalle_opcedula
         self.log = log_callback
 
     def aggregate(self) -> pd.DataFrame:
@@ -81,10 +97,44 @@ class OpcedulaAggregator:
 
         # Excluir POR ASIGNAR del listado de OpCedulas (no es una operacion real)
         es_real = ~motrices['Operacion Cedula'].astype(str).str.startswith('POR ASIGNAR')
+        claves_reales = set(motrices.loc[es_real, 'Operacion Cedula'].unique())
+
+        # Detalle historico saneado: toda OpCedula del dia que no sea vigente
+        # de NINGUN equipo al corte (huerfana, ej. catalogo retirado, o
+        # 'POR ASIGNAR *') se reetiqueta a 'Pendiente'.
+        detalle = self.df_detalle_opcedula
+        if detalle is not None and not detalle.empty:
+            detalle = detalle.copy()
+            detalle['Operación cedula'] = detalle['Operación cedula'].where(
+                detalle['Operación cedula'].isin(claves_reales), 'Pendiente'
+            )
 
         registros = []
         for opcedula, grupo in motrices[es_real].groupby('Operacion Cedula'):
-            registros.append(self._fila_opcedula(opcedula, grupo))
+            grupo_dia = None
+            if detalle is not None:
+                grupo_dia = detalle[detalle['Operación cedula'] == opcedula]
+            registros.append(self._fila_opcedula(opcedula, grupo, grupo_dia))
+
+        # Fila consolidada 'Pendiente': motrices con vigente fantasma (POR
+        # ASIGNAR) + cualquier KM/Viajes historico atribuido a una OpCedula
+        # huerfana (aunque la vigente del equipo sea otra, ej. unidad
+        # reasignada o catalogo retirado a mitad de periodo).
+        grupo_pendiente_vigente = motrices[~es_real]
+        grupo_dia_pendiente = None
+        if detalle is not None:
+            grupo_dia_pendiente = detalle[detalle['Operación cedula'] == 'Pendiente']
+        hay_vigente_pendiente = not grupo_pendiente_vigente.empty
+        hay_historico_pendiente = grupo_dia_pendiente is not None and not grupo_dia_pendiente.empty
+        if hay_vigente_pendiente or hay_historico_pendiente:
+            identidad_pendiente = {
+                'Gerencia': 'Pendiente', 'Operacion': 'POR ASIGNAR',
+                'Circuito': 'POR ASIGNAR', 'Tipo de Unidad': 'VARIOS',
+            }
+            registros.append(self._fila_opcedula(
+                'Pendiente', grupo_pendiente_vigente, grupo_dia_pendiente,
+                identidad=identidad_pendiente,
+            ))
 
         df = pd.DataFrame(registros)
         for col in OPCEDULA_OUTPUT_COLS:
@@ -94,13 +144,31 @@ class OpcedulaAggregator:
         self.log(f'[OP] Por Operacion: {len(df)} operaciones')
         return df
 
-    def _fila_opcedula(self, opcedula: str, grupo: pd.DataFrame) -> dict:
-        """Construye una fila agregando motrices titulares de la OpCedula."""
-        primera = grupo.iloc[0]
+    def _fila_opcedula(self, opcedula: str, grupo: pd.DataFrame,
+                       grupo_dia: Optional[pd.DataFrame] = None,
+                       identidad: Optional[Dict[str, str]] = None) -> dict:
+        """Construye una fila agregando motrices titulares de la OpCedula.
+
+        `grupo` (subset de df_equipos por asignacion vigente) alimenta
+        identidad, conteos de status y dias unidad. `grupo_dia` (subset del
+        detalle historico dia-por-dia, ya saneado) alimenta KM/Diesel/Viajes/
+        Motrices Utilizadas. Si `grupo_dia` es None (modo legacy sin detalle
+        historico), las metricas operativas caen de vuelta a `grupo`.
+        """
         n_titulares = len(grupo)
 
+        if identidad is not None:
+            id_gerencia, id_operacion = identidad['Gerencia'], identidad['Operacion']
+            id_circuito, id_tipo_unidad = identidad['Circuito'], identidad['Tipo de Unidad']
+        elif n_titulares > 0:
+            primera = grupo.iloc[0]
+            id_gerencia, id_operacion = primera['Gerencia'], primera['Operacion']
+            id_circuito, id_tipo_unidad = primera['Circuito'], primera['Tipo de Unidad']
+        else:
+            id_gerencia = id_operacion = id_circuito = id_tipo_unidad = ''
+
         # Counts por status vigente (al corte)
-        status_counts = grupo['Estatus'].value_counts().to_dict()
+        status_counts = grupo['Estatus'].value_counts().to_dict() if n_titulares > 0 else {}
         statuses_canon = ['Operando', 'Disponible', 'Sin Operador', 'Taller',
                           'Gestoria', 'Descanso', 'Rescate', 'Puesto A Punto']
         counts_status = {s: int(status_counts.get(s, 0)) for s in statuses_canon}
@@ -109,16 +177,23 @@ class OpcedulaAggregator:
                     if k not in statuses_canon and k != 'Sin Asignacion')
         counts_status['Otros Status'] = otros
 
-        # Dias unidad (sumas sobre titulares)
-        dias_asignados = int(grupo['Dias Asignado'].sum())
-        dias_activos = int(grupo['Dias Activo'].sum())
+        # Dias unidad (sumas sobre titulares, siempre por asignacion vigente)
+        dias_asignados = int(grupo['Dias Asignado'].sum()) if n_titulares > 0 else 0
+        dias_activos = int(grupo['Dias Activo'].sum()) if n_titulares > 0 else 0
 
-        # Operativos (sumas desde equipos)
-        km_cargado = float(grupo['KM Cargado'].sum())
-        km_vacio = float(grupo['KM Vacio'].sum())
-        km_total = float(grupo['KM Total'].sum())
-        diesel = float(grupo['Diesel LTS'].sum())
-        viajes = int(grupo['Viajes'].sum())
+        # Operativos: dia-por-dia si hay detalle, sino fallback a vigente (legacy)
+        fuente_operativa = grupo_dia if grupo_dia is not None else grupo
+        if fuente_operativa is not None and not fuente_operativa.empty:
+            km_cargado = float(fuente_operativa['KM Cargado'].sum())
+            km_vacio = float(fuente_operativa['KM Vacio'].sum())
+            km_total = float(fuente_operativa['KM Total'].sum())
+            diesel = float(fuente_operativa['Diesel LTS'].sum())
+            viajes = int(fuente_operativa['Viajes'].sum())
+            motrices_utilizadas = int(fuente_operativa['Equipo Motriz'].nunique())
+        else:
+            km_cargado = km_vacio = km_total = diesel = 0.0
+            viajes = 0
+            motrices_utilizadas = 0
         rendimiento = round(km_total / diesel, 2) if diesel > 0 else 0.0
         densidad = round(km_total / viajes, 2) if viajes > 0 else 0.0
 
@@ -151,11 +226,12 @@ class OpcedulaAggregator:
 
         return {
             'Operacion Cedula': opcedula,
-            'Gerencia': primera['Gerencia'],
-            'Operacion': primera['Operacion'],
-            'Circuito': primera['Circuito'],
-            'Tipo de Unidad': primera['Tipo de Unidad'],
+            'Gerencia': id_gerencia,
+            'Operacion': id_operacion,
+            'Circuito': id_circuito,
+            'Tipo de Unidad': id_tipo_unidad,
             'Motrices Titulares': n_titulares,
+            'Motrices Utilizadas': motrices_utilizadas,
             **counts_status,
             'Dias unidad asignados': dias_asignados,
             'Dias unidad activos': dias_activos,
@@ -219,11 +295,19 @@ def post_calcular_tendencia(df_equipos: pd.DataFrame, df_opcedula: pd.DataFrame,
             viajes_real + restantes * prom_v * pct_op, 2
         )
 
-    # Actualiza Tendencia agregada en df_opcedula
+    # Actualiza Tendencia agregada en df_opcedula. Equipos cuya OpCedula
+    # vigente no es clave de ninguna fila de df_opcedula (ej. 'POR ASIGNAR
+    # FULL') se reagrupan bajo 'Pendiente' si esa fila existe, para que su
+    # Tendencia KM (= KM real, sin proyeccion, ya calculada arriba) no se
+    # pierda silenciosamente.
     if df_opcedula.empty:
         return
-    motrices = df_equipos[df_equipos['Tipo Equipo'] == 'Motriz']
-    tend_por_opcedula = motrices.groupby('Operacion Cedula').agg(
+    motrices = df_equipos[df_equipos['Tipo Equipo'] == 'Motriz'].copy()
+    claves_reales = set(df_opcedula['Operacion Cedula'])
+    motrices['_bucket'] = motrices['Operacion Cedula'].where(
+        motrices['Operacion Cedula'].isin(claves_reales), 'Pendiente'
+    )
+    tend_por_opcedula = motrices.groupby('_bucket').agg(
         Tendencia_KM=('Tendencia KM', 'sum'),
         Tendencia_Viajes=('Tendencia Viajes', 'sum'),
     )

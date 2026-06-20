@@ -89,7 +89,7 @@ entonces los dashboards viejos siguen viendo data v0.4.3.
 | `V/U`, `Tendencia V/U`, `Tendencia KM/U` | — | Eliminadas (se pueden derivar dividiendo) |
 | `Objetivo KM/U`, `Objetivo V/U` | — | Eliminadas |
 | `Dias Operando`, `Dias Taller`, `Dias Gestoria`, `Dias Sin Op` | — | Reemplazadas por `Dias unidad asignados/activos` |
-| `Motrices Utilizadas` | — | Eliminada (ahora `Motrices Titulares` es lo unico relevante al corte) |
+| `Motrices Utilizadas` | — | Eliminada (ahora `Motrices Titulares` es lo unico relevante al corte) — **reintroducida en v0.6.0**, ver `docs/cambios.md` |
 | `Remolques`, `Dollys` | — | Reemplazadas por contadores en `Promedio KM por Unidad` |
 
 ### Columnas nuevas

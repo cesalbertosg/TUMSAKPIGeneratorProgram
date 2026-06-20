@@ -109,8 +109,8 @@ def test_pipeline_db_y_excel_producen_resultados_equivalentes(tmp_path):
     # porque depende del catálogo de operaciones, que es el mismo
     df_op_excel = pd.read_excel(r_excel, sheet_name="Por Operación")
     df_op_db = pd.read_excel(r_db, sheet_name="Por Operación")
-    ops_excel = set(df_op_excel['Operación Cedula'])
-    ops_db = set(df_op_db['Operación Cedula'])
+    ops_excel = set(df_op_excel['Operacion Cedula'])
+    ops_db = set(df_op_db['Operacion Cedula'])
     overlap = len(ops_excel & ops_db) / max(len(ops_excel), len(ops_db))
     assert overlap >= 0.90, (
         f"Operaciones cédula deben coincidir ≥90%: overlap={overlap:.1%}, "
@@ -120,8 +120,8 @@ def test_pipeline_db_y_excel_producen_resultados_equivalentes(tmp_path):
     # KPIs per Equipment: BD tiene MENOS períodos por mayor cobertura
     df_kpi_excel = pd.read_excel(r_excel, sheet_name="Por Equipo")
     df_kpi_db = pd.read_excel(r_db, sheet_name="Por Equipo")
-    units_excel = set(df_kpi_excel['Unidades'].astype(str))
-    units_db = set(df_kpi_db['Unidades'].astype(str))
+    units_excel = set(df_kpi_excel['Equipo Motriz'].astype(str))
+    units_db = set(df_kpi_db['Equipo Motriz'].astype(str))
     units_overlap = len(units_excel & units_db) / max(len(units_excel), len(units_db))
     assert units_overlap >= 0.95, (
         f"Unidades en KPIs deben coincidir ≥95%: overlap={units_overlap:.1%}"

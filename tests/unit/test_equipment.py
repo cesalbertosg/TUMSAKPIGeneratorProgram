@@ -148,7 +148,7 @@ def test_asignacion_vigente_ultimo_dia() -> None:
 
 
 def test_asignacion_vigente_egreso_por_asignar() -> None:
-    """Ultimo dia es 'Sin Asignacion' -> POR ASIGNAR / PENDIENTE."""
+    """Ultimo dia es 'Sin Asignacion' -> POR ASIGNAR / Pendiente."""
     ced = _ced([
         {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
          'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
@@ -159,7 +159,7 @@ def test_asignacion_vigente_egreso_por_asignar() -> None:
     ])
     agg = _agg(ced, _trips([]))
     fila = agg.aggregate().iloc[0]
-    assert fila['Gerencia'] == 'PENDIENTE'
+    assert fila['Gerencia'] == 'Pendiente'
     assert fila['Operacion'] == 'POR ASIGNAR'
     assert fila['Estatus'] == 'Sin Asignacion'
 
@@ -174,7 +174,7 @@ def test_phantom_sin_cedula_por_asignar() -> None:
     fila = agg.aggregate().iloc[0]
     assert fila['Equipo Motriz'] == 'T999'
     assert fila['Tipo Equipo'] == 'Motriz'
-    assert fila['Gerencia'] == 'PENDIENTE'
+    assert fila['Gerencia'] == 'Pendiente'
     assert fila['Operacion'] == 'POR ASIGNAR'
     assert fila['Dias Asignado'] == 0
     assert fila['Dias Sin Asignacion'] == 5  # corte = dia 5
@@ -391,3 +391,54 @@ def test_schema_de_salida_completo() -> None:
     df = _agg(ced, _trips([]), corte='2026-06-01').aggregate()
     assert list(df.columns) == EQUIPO_OUTPUT_COLS
     assert len(df) == 1
+
+
+# ---------- aggregate_detalle_opcedula ----------
+
+def test_aggregate_detalle_opcedula_agrupa_por_equipo_y_opcedula() -> None:
+    """1 fila por combinacion (Equipo Motriz, Operación cedula), SUM via _metricas_operativas.
+
+    Caso L7: viajo bajo 2 OpCedulas distintas en el periodo (reasignacion
+    mid-mes) -> 2 filas, cada una con el KM/Diesel/Viajes solo de esos dias.
+    """
+    trips = _trips([
+        {'Equipo Motriz': 'l7', 'Fecha creación': '2026-06-01', 'Número de Viaje': 1,
+         'ClaveCategoria': 'X', 'Operación cedula': 'MARS CAMIONETA',
+         'KM_cargado': 100, 'KM_vacio': 20, 'KM_total': 120, 'Diesel_LTS': 30, 'Viajes_count': 1},
+        {'Equipo Motriz': 'l7', 'Fecha creación': '2026-06-02', 'Número de Viaje': 2,
+         'ClaveCategoria': 'X', 'Operación cedula': 'AXION LOG CAMIONETA',
+         'KM_cargado': 200, 'KM_vacio': 40, 'KM_total': 240, 'Diesel_LTS': 50, 'Viajes_count': 1},
+        {'Equipo Motriz': 'l7', 'Fecha creación': '2026-06-03', 'Número de Viaje': 3,
+         'ClaveCategoria': 'X', 'Operación cedula': 'AXION LOG CAMIONETA',
+         'KM_cargado': 50, 'KM_vacio': 10, 'KM_total': 60, 'Diesel_LTS': 12, 'Viajes_count': 1},
+        # Comodato bajo AXION: excluido de df_trips_validos, no debe sumar.
+        {'Equipo Motriz': 'l7', 'Fecha creación': '2026-06-04', 'Número de Viaje': 4,
+         'ClaveCategoria': 'COM', 'Operación cedula': 'AXION LOG CAMIONETA',
+         'KM_cargado': 999, 'KM_vacio': 999, 'KM_total': 1998, 'Diesel_LTS': 999, 'Viajes_count': 1},
+    ])
+    agg = _agg(_ced([]), trips, corte='2026-06-04')
+    df_detalle = agg.aggregate_detalle_opcedula()
+
+    assert len(df_detalle) == 2
+    mars = df_detalle[df_detalle['Operación cedula'] == 'MARS CAMIONETA'].iloc[0]
+    assert mars['Equipo Motriz'] == 'L7'
+    assert mars['KM Total'] == 120
+    assert mars['Viajes'] == 1
+    axion = df_detalle[df_detalle['Operación cedula'] == 'AXION LOG CAMIONETA'].iloc[0]
+    assert axion['KM Total'] == 300  # 240 + 60; el comodato (1998) queda excluido
+    assert axion['Viajes'] == 2
+
+
+def test_aggregate_detalle_opcedula_vacio_sin_columna() -> None:
+    """Sin 'Operación cedula' en viajes (tests legacy) -> DataFrame vacio con schema."""
+    trips = _trips([
+        {'Equipo Motriz': 'C070', 'Fecha creación': '2026-06-01', 'Número de Viaje': 1,
+         'ClaveCategoria': 'X'},
+    ])
+    agg = _agg(_ced([]), trips)
+    df_detalle = agg.aggregate_detalle_opcedula()
+    assert df_detalle.empty
+    assert list(df_detalle.columns) == [
+        'Equipo Motriz', 'Operación cedula', 'KM Cargado', 'KM Vacio',
+        'KM Total', 'Diesel LTS', 'Rendimiento', 'Viajes', 'Densidad Viaje',
+    ]

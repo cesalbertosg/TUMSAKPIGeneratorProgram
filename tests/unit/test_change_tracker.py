@@ -52,7 +52,7 @@ def test_ingreso_unidad_aparece_despues_de_fecha_minima(tracker: ChangeTracker) 
     ingreso = next(c for c in changes if c["Tipo Cambio"] == "INGRESO")
     assert ingreso["Operacion inicial"] == "POR ASIGNAR FULL"
     assert ingreso["Operacion final"] == "VEND CENTRO"
-    assert ingreso["Gerencia inicial"] == "PENDIENTE"
+    assert ingreso["Gerencia inicial"] == "Pendiente"
     assert ingreso["Fecha cambio"] == "05/05/2026"
 
 
@@ -90,7 +90,7 @@ def test_egreso_unidad_desaparece_antes_de_fecha_maxima(tracker: ChangeTracker) 
     egreso = next(c for c in changes if c["Tipo Cambio"] == "EGRESO")
     assert egreso["Operacion inicial"] == "VEND CENTRO"
     assert egreso["Operacion final"] == "POR ASIGNAR FULL"
-    assert egreso["Gerencia final"] == "PENDIENTE"
+    assert egreso["Gerencia final"] == "Pendiente"
     # El egreso se registra el dia siguiente al ultimo dia activo (06/05).
     assert egreso["Fecha cambio"] == "06/05/2026"
 

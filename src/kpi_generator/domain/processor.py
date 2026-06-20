@@ -186,44 +186,39 @@ class DataProcessor:
         if source == "sheets":
             self.log("Fuente cédulas: Google Sheets", code="SRC")
             sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
-            df = self.load_cedula_from_sheets(sheet_id, cedulas_tab)
+
+            # Paso 1: rango de fechas desde zmov — antes de cualquier consulta externa
+            try:
+                fecha_min, fecha_max = derive_date_range(trips_file)
+            except DateRangeError as e:
+                self.log(f"No se pudo determinar rango de viajes: {e}", LogLevel.ERROR, "ERR")
+                return None, pd.DataFrame()
+
+            self.log(f"Rango de viajes: {fecha_min} a {fecha_max}", code="RNG")
+
+            # Pasos 2-5: físicos → Drive API → complementar y guardar
+            df = sheets_io.load_cedulas_for_period(
+                sheet_id, self.log, fecha_min, fecha_max,
+                tab_name=cedulas_tab, cedulas_folder=cedulas_folder,
+            )
             if df is None:
                 return None, pd.DataFrame()
 
-            # Acotar al rango real del zmov (primer a ultimo viaje): el respaldo
-            # local nunca debe generar "Completa" para dias sin viajes todavia.
-            # Si el sheet no llega hasta fecha_max, fill_missing_dates extiende
-            # el ultimo snapshot conocido (la "foto" no cambia desde el corte).
-            try:
-                fecha_min, fecha_max = derive_date_range(trips_file)
-                mask = (
-                    (df['Fecha Cedula_dt'].dt.date >= fecha_min)
-                    & (df['Fecha Cedula_dt'].dt.date <= fecha_max)
-                )
-                df = df[mask].copy()
-                if df.empty:
-                    self.log("Cédula Sheets sin datos en el rango de viajes", LogLevel.ERROR, "ERR")
-                    return None, pd.DataFrame()
-                df = excel_io.fill_missing_dates(df)
-                self.log(f"Cédula Sheets acotada al rango de viajes: {fecha_min} a {fecha_max}", code="RNG")
-            except DateRangeError as e:
-                self.log(f"No se pudo acotar cédula Sheets al rango de viajes: {e}", LogLevel.ERROR, "WARN")
-
+            # Crossfill de units_extra (Operador, No Operador, etc.) desde archivos locales
             if cedulas_folder:
-                excel_io.save_cedula_as_completa(df, cedulas_folder, self.log)
                 df_local = excel_io.load_local_cedulas_for_crossfill(cedulas_folder, self.log)
                 if not df_local.empty:
                     df, crossfill_log = excel_io.crossfill_cedulas(df, df_local, self.log)
                     for unidad, fecha, campo in crossfill_log:
                         self._registrar_inconsistencia(
-                            unidad, fecha, campo, valor_aplicado='(desde cédula local)',
+                            unidad, fecha, campo,
+                            valor_aplicado='(desde cédula local)',
                             motivo='Completado por cruce con cédula local guardada',
                         )
             else:
                 self.log(
-                    "Sin carpeta de cédulas seleccionada: no se genera respaldo local "
-                    "'Completa' ni se completa Operador/No Operador/Estatus Operador/"
-                    "Observaciones desde cédulas guardadas previamente",
+                    "Sin carpeta de cédulas seleccionada: no se completa Operador/No Operador/"
+                    "Estatus Operador/Observaciones desde cédulas guardadas previamente",
                     LogLevel.ERROR, "WARN",
                 )
 
@@ -483,7 +478,7 @@ class DataProcessor:
             
             # Agregar al mapeo con valores predeterminados
             unit_mapping[unit_id] = {
-                'Gerencia': 'PENDIENTE',
+                'Gerencia': 'Pendiente',
                 'Operación': 'POR ASIGNAR',
                 'Tipo de Unidad': tipo_unidad,
                 'Circuito': 'POR ASIGNAR',
@@ -634,7 +629,7 @@ class DataProcessor:
             fantasma_units = merged.loc[mask_fantasma_dia, 'Equipo Motriz']
             tipo_map = {uid: unit_mapping[uid]['Tipo de Unidad'] for uid in fantasma_units.unique() if uid in unit_mapping}
             merged.loc[mask_fantasma_dia, 'Tipo de Unidad'] = fantasma_units.map(tipo_map).values
-            merged.loc[mask_fantasma_dia, 'Gerencia'] = 'PENDIENTE'
+            merged.loc[mask_fantasma_dia, 'Gerencia'] = 'Pendiente'
             merged.loc[mask_fantasma_dia, 'Operación'] = 'POR ASIGNAR'
             merged.loc[mask_fantasma_dia, 'Circuito'] = 'POR ASIGNAR'
             merged.loc[mask_fantasma_dia, 'Operando'] = 'SIN ASIGNACIÓN'
@@ -1164,9 +1159,11 @@ class DataProcessor:
                 log_callback=self.log_func,
             )
             df_kpi = equipment_agg.aggregate()
+            df_detalle_opcedula = equipment_agg.aggregate_detalle_opcedula()
 
             opcedula_agg = OpcedulaAggregator(
                 df_equipos=df_kpi, obj_mapping=obj_mapping, period=period,
+                df_detalle_opcedula=df_detalle_opcedula,
                 log_callback=self.log_func,
             )
             df_opcedula = opcedula_agg.aggregate()
@@ -1319,7 +1316,18 @@ class DataProcessor:
                 'Cumplimiento KM %': 'Cumplimiento KM OpCed %',
                 'Cumplimiento Viajes %': 'Cumplimiento Viajes OpCed %',
             })
-            df['__opcedula_join'] = df['Operación cedula'].astype(str)
+            # Sanea claves huerfanas (ninguna OpCedula vigente al corte las
+            # reclama) para que matcheen la fila consolidada 'Pendiente' en
+            # vez de quedar sin join (mismo criterio que
+            # OpcedulaAggregator.aggregate()).
+            if not df_kpi.empty:
+                motrices_kpi = df_kpi[df_kpi['Tipo Equipo'] == 'Motriz']
+                es_real_kpi = ~motrices_kpi['Operacion Cedula'].astype(str).str.startswith('POR ASIGNAR')
+                claves_reales = set(motrices_kpi.loc[es_real_kpi, 'Operacion Cedula'].unique())
+            else:
+                claves_reales = set()
+            op_dia_str = df['Operación cedula'].astype(str)
+            df['__opcedula_join'] = op_dia_str.where(op_dia_str.isin(claves_reales), 'Pendiente')
             op_subset['__opcedula_join'] = op_subset['__opcedula_join'].astype(str)
             df = df.merge(op_subset, on='__opcedula_join', how='left')
             df = df.drop(columns=['__opcedula_join'])

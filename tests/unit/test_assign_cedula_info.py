@@ -104,7 +104,7 @@ def test_fantasma_dia_usa_pendiente_no_vigente() -> None:
     merged = processor._assign_cedula_info_optimized(df_trips, df_cedulas, unit_mapping)
 
     fantasma = merged[merged['Fecha creación_date'] == pd.Timestamp('2026-06-02').date()].iloc[0]
-    assert fantasma['Gerencia'] == 'PENDIENTE'
+    assert fantasma['Gerencia'] == 'Pendiente'
     assert fantasma['Operando'] == 'SIN ASIGNACIÓN'
     assert fantasma['Operación cedula'] == 'POR ASIGNAR TRACTOCAMION FULL'
 

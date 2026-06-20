@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.6.0 — 2026-06-20 (Atribución día-por-día en "Por Operación" + fila Pendiente + Motrices Utilizadas)
+
+`OpcedulaAggregator` (`domain/opcedula.py`) atribuía el 100% del KM/Diesel/Viajes
+del período a la OpCédula vigente al corte de cada equipo, sin importar bajo qué
+OpCédula viajó cada día. Esto inflaba operaciones vigentes con KM de OpCédulas
+ya retiradas del catálogo (ej. equipo reasignado a mitad de mes) y excluía por
+completo las unidades fantasma (`POR ASIGNAR *`), generando un hueco de ~0.6%
+entre las sumas de "Viajes" y "Por Operación".
+
+- Nuevo `EquipmentAggregator.aggregate_detalle_opcedula()` (`domain/equipment.py`):
+  agrupa `df_trips_validos` (excluye comodatos) por `(Equipo Motriz, Operación
+  cedula)` día-por-día y reutiliza `_metricas_operativas()` por subgrupo — sin
+  reimplementar la derivación de columnas.
+- `OpcedulaAggregator.__init__` acepta `df_detalle_opcedula` (opcional,
+  backward-compatible: si es `None` cae al comportamiento legacy por suma desde
+  `df_equipos`). `_fila_opcedula()` separa identidad/status/días (desde la
+  asignación vigente) de KM/Diesel/Viajes (desde el detalle día-por-día).
+- Toda OpCédula histórica que ningún equipo tiene como vigente al corte
+  (huérfana, igual criterio que ya existía para `POR ASIGNAR *`) se redirige a
+  una fila consolidada `Gerencia = 'Pendiente'` — ya no se diluye en la vigente
+  de quien sea el titular actual del equipo.
+- Nueva columna `Motrices Utilizadas`: unidades distintas con ≥1 viaje real
+  atribuido a esa OpCédula (día-por-día), junto a `Motrices Titulares` (vigente
+  al corte, sin cambios). La divergencia entre ambas expone unidades tituladas
+  sin actividad real en el período. Documentada desde el legacy
+  (`docs/diccionario-viajes.md` columna #61) pero eliminada en v0.5.0 — ver nota
+  en `docs/migracion-looker-v0.5.0.md`.
+- Homologado el casing `'PENDIENTE'` → `'Pendiente'` en `equipment.py`,
+  `change_tracker.py` y `processor.py` (Looker Studio separaba la dimensión
+  Gerencia en dos valores cuando coexistían ambos casings).
+- `_denormalize_kpis_to_trips_v050` (`domain/processor.py`) sanea las mismas
+  claves huérfanas antes del merge OpCédula→Viajes, así los KM de días con
+  OpCédula retirada matchean la fila `Pendiente` en vez de quedar sin join.
+
+Verificado contra datos reales de producción (20/06/2026, fuente BD, 579
+unidades / 63 operaciones): el hueco Viajes-vs-Por Operación bajó de ~0.6% a
+**0.000%** exacto en KM, Diesel y Viajes.
+
+Alcance explícito (sin cambios): Objetivos/Cumplimiento %/Tendencia siguen
+sobre la asignación vigente; "Por Equipo" no cambia (1 fila por equipo, sin
+partición por OpCédula histórica); remolques/arrastres siguen sin OpCédula
+propia y excluidos de "Por Operación".
+
+### Tests
+
+5 tests nuevos (`test_opcedula.py` ×3, `test_equipment.py` ×2) cubren split
+día-por-día con OpCédula huérfana, con dos OpCédulas reales repartidas, y el
+agrupamiento de `aggregate_detalle_opcedula()`. 6 assertions de casing
+actualizadas en `test_equipment.py`, `test_change_tracker.py`,
+`test_assign_cedula_info.py`. Suite completa: 152 unit + integration en verde
+(`pytest tests/`).
+
+De paso se corrigieron 2 referencias a columnas obsoletas en
+`tests/integration/test_pipeline_identidad.py`, preexistentes desde la
+migración de nombres de hoja v0.4.0 (`'Operación Cedula'` → `'Operacion
+Cedula'`, `'Unidades'` → `'Equipo Motriz'`) — nunca coincidían con el esquema
+real, no relacionado con el cambio de este release.
+
 ## 0.5.4 — 2026-06-16 (Historial Drive API para columnas estáticas en fuente Sheets)
 
 `load_cedula_from_sheet` (`io/sheets.py`) leía Gerencia/Operación/Circuito/Tipo

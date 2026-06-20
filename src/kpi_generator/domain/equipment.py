@@ -189,7 +189,7 @@ class AsignacionVigente:
     def pendiente(cls, tipo_unidad: str = '') -> "AsignacionVigente":
         """Asignacion para equipos egresados o nunca asignados."""
         return cls(
-            gerencia='PENDIENTE',
+            gerencia='Pendiente',
             operacion='POR ASIGNAR',
             tipo_unidad=tipo_unidad,
             circuito='POR ASIGNAR',
@@ -276,6 +276,34 @@ class EquipmentAggregator:
                  f'({(df["Tipo Equipo"] == "Motriz").sum()} motrices, '
                  f'{(df["Tipo Equipo"] != "Motriz").sum()} arrastres)')
         return df
+
+    def aggregate_detalle_opcedula(self) -> pd.DataFrame:
+        """Detalle motriz x OpCedula historica (dia-por-dia) para Por Operacion.
+
+        A diferencia de `aggregate()` (1 fila por equipo, asignacion vigente al
+        cierre), aqui un motriz genera 1 fila por cada `Operación cedula`
+        historica distinta que tuvo durante el periodo. Reusa
+        `_metricas_operativas` para que KM/Diesel/Viajes se deriven igual que
+        en Por Equipo (mismas columnas, mismos fallbacks).
+        """
+        cols = ['Equipo Motriz', 'Operación cedula', 'KM Cargado', 'KM Vacio',
+                'KM Total', 'Diesel LTS', 'Rendimiento', 'Viajes', 'Densidad Viaje']
+        if self.df_trips_validos.empty or 'Operación cedula' not in self.df_trips_validos.columns:
+            return pd.DataFrame(columns=cols)
+
+        df = self.df_trips_validos.copy()
+        df['Equipo Motriz'] = df['Equipo Motriz'].astype(str).str.strip().str.upper()
+
+        registros = []
+        for (equipo, opcedula), grupo in df.groupby(['Equipo Motriz', 'Operación cedula']):
+            registros.append({
+                'Equipo Motriz': equipo,
+                'Operación cedula': opcedula,
+                **self._metricas_operativas(grupo),
+            })
+        if not registros:
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame(registros)[cols]
 
     # ---------- Helpers de universo y tipo ----------
 
