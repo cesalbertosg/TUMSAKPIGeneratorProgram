@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6.2 — 2026-06-24 (Fix: asignación estática incorrecta con fuente "sheets")
+
+Diagnóstico del reporte de Beto sobre la unidad **C084**: con `--cedulas-source sheets`,
+el resultado mostraba "Pendiente"/"Por Asignar" para los 31 días del periodo, cuando
+en realidad la unidad estuvo asignada hasta el 18/06 y pasó a "Pendiente" recién el 19/06.
+
+Causa raíz: el loader vigente (`load_cedula_from_sheet`) lee únicamente las columnas
+**estáticas** (Gerencia/Operación/Tipo de Unidad/Circuito) del tab "Unidades Motriz",
+que reflejan el estado ACTUAL de la unidad — no el histórico. Ese valor vigente se
+aplicaba por igual a todas las fechas del rango, borrando cualquier cambio de
+asignación ocurrido a mitad de mes.
+
+Fix: se completó `load_cedulas_for_period` (`io/sheets.py`), un loader híbrido que
+`processor.py` ya invocaba desde v0.6.0 pero que nunca se había terminado de commitear
+(dejaba `main` con un `AttributeError` al usar fuente `sheets`). Estrategia:
+
+1. **Paso 1 (autoritativo)**: lee archivos físicos diarios `Cedula DDMMYYYY.xlsx` en
+   la carpeta de cédulas seleccionada — cada fecha conserva su asignación real de ese día.
+2. **Paso 2**: para fechas sin archivo físico, recurre a revisiones históricas de
+   Google Drive API (`_list_revisions` / `_extract_cedula_vertical_for_date`),
+   guardando el resultado como `Cedula {fecha} Completa.xlsx` para reuso.
+3. Si la conexión a Sheets/Drive falla y no hay carpeta física, devuelve `None` en
+   vez de fabricar un resultado (el pipeline aborta el paso de cédulas explícitamente).
+
+Regresión cubierta en `tests/unit/test_load_cedulas_for_period.py`: reproduce el caso
+C084 (asignado días 1-2, "Pendiente" día 3) y verifica que el resultado varía día a
+día en vez de heredar un solo valor. Se reescribieron 3 tests en
+`test_cedula_sheets_date_range.py` que mockeaban el loader anterior (ya no usado por
+`_load_cedulas_by_source`). Suite completa: 143 unit + 11 integration, sin regresiones.
+
+Ver `docs/plan-historico-cedula-sheets.md` para el diagnóstico detallado y las fases
+pendientes (tab "Histórico Operaciones", backfill, logger diario) que cubrirían el
+caso donde NO hay carpeta física de respaldo.
+
 ## 0.6.1 — 2026-06-24 (Fix: confirmación al ignorar carpeta local de cédulas)
 
 Durante pruebas en la computadora de Yaneth, el dropdown "Fuente cédulas" quedó

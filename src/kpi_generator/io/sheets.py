@@ -6,9 +6,13 @@ acceso a la API de Google Sheets del motor de calculo. Reciben
 
 Publico:
 - `load_cedula_from_sheet(sheet_id, log_callback, tab_name, use_revision_history)` -> DataFrame | None
+- `load_cedulas_for_period(sheet_id, log_callback, fecha_min, fecha_max, tab_name, cedulas_folder)` -> DataFrame | None
+  Reemplaza a `load_cedula_from_sheet` en `_load_cedulas_by_source` (fuente "sheets"):
+  prioriza archivos fisicos diarios por fecha y solo recurre a Drive API para los
+  huecos, evitando que el valor VIGENTE del sheet se aplique a fechas pasadas.
 - `sync_workbook_to_sheets(sheets_id, dfs, log_callback)` -> bool
 
-Nota: ambos importan `google-auth` + `gspread`. Para tests unitarios que no
+Nota: todas importan `google-auth` + `gspread`. Para tests unitarios que no
 toquen la red, mockear `gspread.authorize` o `Credentials.from_service_account_file`.
 """
 
@@ -17,7 +21,8 @@ from __future__ import annotations
 import io as _io
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Optional
 
 import gspread
@@ -26,7 +31,7 @@ import requests as _req
 from google.oauth2.service_account import Credentials
 
 from kpi_generator.config import Config, LogLevel
-from kpi_generator.io.excel import fill_missing_dates
+from kpi_generator.io.excel import fill_missing_dates, parse_cedula_filename
 
 LogCallback = Callable[..., None]
 
@@ -248,6 +253,91 @@ def _patch_static_from_revisions(df: pd.DataFrame, sheet_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Helpers para load_cedulas_for_period
+# ---------------------------------------------------------------------------
+
+def _extract_cedula_vertical_for_date(
+    all_rows: list[list[str]],
+    target_date: date,
+) -> list[dict]:
+    """Extrae snapshot vertical de una cédula horizontal para una fecha específica.
+
+    Busca la columna de fecha más reciente <= target_date en all_rows.
+    Devuelve lista de dicts {Unidades, Gerencia, Operación, …, Operando,
+    Fecha Cedula} o lista vacía si falla.
+    """
+    date_col_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
+    unit_id_re = re.compile(r'^[A-Za-z][A-Za-z0-9]+$')
+    subtotal_re = re.compile(r'^\d+\s+al\s+\d+|en\s+adelante', re.IGNORECASE)
+    skip_col_names = {'Taller', 'Gestoría', 'Sin operador', 'Sin Operador', ''}
+
+    header_idx = next(
+        (i for i, row in enumerate(all_rows) if 'Unidad' in row and 'Gerencia' in row),
+        None,
+    )
+    if header_idx is None:
+        return []
+
+    header = all_rows[header_idx]
+    unit_col_idx = header.index('Unidad')
+
+    # Construir lista (col_index, col_date) para todas las columnas de fecha
+    date_col_pairs: list[tuple[int, date]] = []
+    for i, h in enumerate(header):
+        h_s = h.strip()
+        if date_col_re.match(h_s):
+            try:
+                d = datetime.strptime(h_s, '%d/%m/%Y').date()
+                date_col_pairs.append((i, d))
+            except ValueError:
+                pass
+
+    if not date_col_pairs:
+        return []
+
+    # Columna más reciente <= target_date; si ninguna califica, la más antigua
+    valid = [(i, d) for i, d in date_col_pairs if d <= target_date]
+    best_col_idx, _ = max(valid, key=lambda x: x[1]) if valid else date_col_pairs[0]
+
+    # Columnas meta (no son fechas, no son subtotales, no son categorías a omitir)
+    meta_col_indices = [
+        i for i, h in enumerate(header)
+        if not date_col_re.match(h.strip())
+        and not subtotal_re.match(h.strip())
+        and h.strip() not in skip_col_names
+    ]
+
+    records = []
+    for row in all_rows[header_idx + 1:]:
+        if len(row) <= unit_col_idx:
+            continue
+        unit = row[unit_col_idx].strip()
+        if not unit_id_re.match(unit):
+            continue
+        padded = row + [''] * max(0, len(header) - len(row))
+        meta = {
+            Config.CEDULA_COLUMN_ALIASES.get(header[i].strip(), header[i].strip()): padded[i].strip()
+            for i in meta_col_indices
+        }
+        meta['Operando'] = padded[best_col_idx] if best_col_idx < len(padded) else ''
+        meta['Fecha Cedula'] = target_date.strftime('%d/%m/%Y')
+        records.append(meta)
+
+    return records
+
+
+def _finalize_cedulas_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Forward-fill Operando vacío entre fechas y rellena días ausentes."""
+    if 'Operando' in df.columns:
+        df = df.sort_values(['Unidades', 'Fecha Cedula_dt'])
+        df['Operando'] = (
+            df.groupby('Unidades')['Operando']
+            .transform(lambda s: s.replace('', None).ffill().fillna('Desconocido'))
+        )
+    return fill_missing_dates(df)
+
+
+# ---------------------------------------------------------------------------
 # API pública
 # ---------------------------------------------------------------------------
 
@@ -411,3 +501,171 @@ def sync_workbook_to_sheets(sheets_id: str, dfs: dict[str, pd.DataFrame],
     except Exception as e:
         log(f"Error Google Sheets: {e}", LogLevel.ERROR, "SHEETS")
         return False
+
+
+def load_cedulas_for_period(
+    sheet_id: str,
+    log: LogCallback,
+    fecha_min: date,
+    fecha_max: date,
+    tab_name: Optional[str] = None,
+    cedulas_folder: Optional[str] = None,
+) -> Optional[pd.DataFrame]:
+    """Carga cédulas para [fecha_min, fecha_max] con prioridad por fecha:
+    1. Archivo físico en cedulas_folder (autoritativo — cédulas guardadas a mano)
+    2. Revisión Drive API para esa fecha (descargada y guardada en carpeta)
+    3. forward-fill para gaps residuales
+
+    Reemplaza load_cedula_from_sheet en el flujo source='sheets'.
+    """
+    n_days = (fecha_max - fecha_min).days + 1
+    all_dates = [fecha_min + timedelta(days=i) for i in range(n_days)]
+
+    # ------------------------------------------------------------------
+    # Paso 1: archivos físicos ya en carpeta para el rango
+    # ------------------------------------------------------------------
+    dates_physical: dict[date, pd.DataFrame] = {}
+    folder_path: Optional[Path] = None
+
+    if cedulas_folder:
+        folder_path = Path(cedulas_folder)
+        if folder_path.exists() and folder_path.is_dir():
+            for f in sorted(folder_path.glob("*.xlsx")):
+                dt = parse_cedula_filename(f.name)
+                if dt is None:
+                    continue
+                d = dt.date()
+                if not (fecha_min <= d <= fecha_max):
+                    continue
+                try:
+                    df_f = pd.read_excel(f, dtype=str).fillna('')
+                    for src, dst in Config.CEDULA_COLUMN_ALIASES.items():
+                        if src in df_f.columns and dst not in df_f.columns:
+                            df_f = df_f.rename(columns={src: dst})
+                    if 'Unidades' not in df_f.columns:
+                        continue
+                    df_f['Unidades'] = df_f['Unidades'].str.strip().str.upper()
+                    df_f['Fecha Cedula'] = d.strftime('%d/%m/%Y')
+                    df_f['Fecha Cedula_dt'] = pd.Timestamp(d)
+                    dates_physical[d] = df_f
+                except Exception:
+                    continue
+
+    n_phys = len(dates_physical)
+    log(
+        f"Archivos físicos en rango: {n_phys} días"
+        + (f" ({min(dates_physical)} → {max(dates_physical)})" if dates_physical else ""),
+        code="PHYS",
+    )
+
+    # ------------------------------------------------------------------
+    # Paso 2: conectar a Sheets + listar revisiones Drive API
+    # ------------------------------------------------------------------
+    try:
+        creds = Credentials.from_service_account_file(
+            Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
+        )
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(sheet_id)
+        if tab_name is None:
+            tab_name = sh.worksheets()[0].title
+        ws = sh.worksheet(tab_name)
+        live_all_rows = ws.get_all_values()
+        revisions = _list_revisions(sheet_id, creds)
+        log(f"Drive API: {len(revisions)} revisiones disponibles", LogLevel.DEBUG, "REV")
+    except Exception as e:
+        log(f"Error conectando a Sheets/Drive API: {e}", LogLevel.ERROR, "ERR")
+        if dates_physical:
+            log("Usando solo archivos físicos disponibles", LogLevel.ERROR, "WARN")
+            df = pd.concat(list(dates_physical.values()), ignore_index=True)
+            df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula_dt'])
+            return _finalize_cedulas_df(df)
+        return None
+
+    # ------------------------------------------------------------------
+    # Paso 3: fechas faltantes → complementar con Drive API
+    # ------------------------------------------------------------------
+    dates_missing = [d for d in all_dates if d not in dates_physical]
+    if dates_missing:
+        log(f"Fechas sin archivo físico: {len(dates_missing)} → consultando Drive API",
+            code="REV")
+
+    newest_rev_id = revisions[-1]['id'] if revisions else None
+    oldest_rev = revisions[0] if revisions else None
+
+    # Agrupar por revision_id para minimizar descargas
+    rev_id_to_dates: dict[str, list[date]] = defaultdict(list)
+    for d in dates_missing:
+        rev = _revision_for_date(revisions, d) if revisions else None
+        if rev is None:
+            rev = oldest_rev  # aproximación si la fecha es anterior a la primera revisión
+        if rev:
+            rev_id_to_dates[rev['id']].append(d)
+        # Sin revisión disponible: quedará para forward-fill
+
+    n_drive_added = 0
+    for rev_id, dates_for_rev in rev_id_to_dates.items():
+        snapshot_rows = (
+            live_all_rows if rev_id == newest_rev_id
+            else _fetch_revision_raw(sheet_id, rev_id, creds, tab_name)
+        )
+        if snapshot_rows is None:
+            log(f"Revisión {rev_id}: descarga fallida", LogLevel.DEBUG, "REV")
+            continue
+
+        for d in dates_for_rev:
+            records = _extract_cedula_vertical_for_date(snapshot_rows, d)
+            if not records:
+                continue
+
+            df_d = pd.DataFrame(records)
+            df_d = df_d.rename(columns={'Unidad': 'Unidades'})
+            if 'Unidades' not in df_d.columns:
+                continue
+            df_d['Unidades'] = df_d['Unidades'].str.strip().str.upper()
+            df_d['Fecha Cedula'] = d.strftime('%d/%m/%Y')
+            df_d['Fecha Cedula_dt'] = pd.Timestamp(d)
+            dates_physical[d] = df_d
+            n_drive_added += 1
+
+            # Guardar xlsx en carpeta para reusar en futuras ejecuciones
+            if folder_path is not None:
+                try:
+                    cols_save = [
+                        c for c in Config.COLUMNS["units"] + Config.COLUMNS["units_extra"]
+                        if c in df_d.columns
+                    ]
+                    fname = f"Cedula {d.strftime('%d%m%Y')} Completa.xlsx"
+                    out_path = folder_path / fname
+                    if not out_path.exists():
+                        df_d[cols_save].to_excel(out_path, engine='openpyxl', index=False)
+                        log(f"Drive API → guardado: {fname}", code="SAVE")
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------
+    # Paso 4: reporte de cobertura
+    # ------------------------------------------------------------------
+    n_gap = sum(1 for d in all_dates if d not in dates_physical)
+    log(
+        f"Cobertura cédulas: {n_phys} físicos, {n_drive_added} Drive API"
+        + (f", {n_gap} gap (forward-fill)" if n_gap else ", cobertura completa"),
+        code="COV",
+    )
+
+    # ------------------------------------------------------------------
+    # Paso 5: construir DataFrame final
+    # ------------------------------------------------------------------
+    available = [dates_physical[d] for d in all_dates if d in dates_physical]
+    if not available:
+        log("Sin datos de cédula disponibles para el período", LogLevel.ERROR, "ERR")
+        return None
+
+    df = pd.concat(available, ignore_index=True)
+    df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula_dt'])
+    log(
+        f"Cédulas período: {df['Unidades'].nunique()} unidades, "
+        f"{df['Fecha Cedula_dt'].nunique()} días",
+        code="OK",
+    )
+    return _finalize_cedulas_df(df)
