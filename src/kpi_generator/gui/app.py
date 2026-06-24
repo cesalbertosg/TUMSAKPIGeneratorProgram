@@ -510,6 +510,19 @@ class KPIGeneratorGUI:
                 "Elige 'No' para regresar y seleccionar una carpeta.",
             )
 
+        if source != 'excel' and self.paths["cedulas"].get().strip():
+            fuente_nombre = "Google Sheets" if source == 'sheets' else "la base de datos PostgreSQL"
+            return messagebox.askyesno(
+                "Verifica la fuente de cédulas",
+                f"'Fuente cédulas' está en '{source}', no en 'excel'.\n\n"
+                "La carpeta de cédulas que seleccionaste SOLO se usará para completar "
+                "Operador / No Operador / Estatus Operador / Observaciones.\n\n"
+                "La asignación de unidades (Gerencia, Operación, Tipo de Unidad, Circuito) "
+                f"se tomará de {fuente_nombre}, NO del archivo físico local.\n\n"
+                "¿Es correcto? Elige 'No' para regresar y cambiar 'Fuente cédulas' a "
+                "'excel' si quieres que se use la carpeta local para la asignación.",
+            )
+
         return True
     
     def start_processing(self):
