@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1 — 2026-06-24 (Fix: confirmación al ignorar carpeta local de cédulas)
+
+Durante pruebas en la computadora de Yaneth, el dropdown "Fuente cédulas" quedó
+en `sheets` en vez de `excel` mientras ella sí seleccionaba una carpeta local de
+cédulas. En ese modo, la asignación de unidades (Gerencia, Operación, Tipo de
+Unidad, Circuito) siempre viene de Google Sheets — la carpeta local solo se usa
+para completar Operador/No Operador/Estatus Operador/Observaciones vía
+crossfill (`_load_cedulas_by_source`, `domain/processor.py`). El programa no
+avisaba de este desajuste; el LEEME-Yaneth.txt ya pide confirmar "excel" en el
+dropdown (paso 3) pero dependía de que el usuario lo recordara.
+
+- `validate_inputs()` (`gui/app.py`) ahora bloquea con un diálogo de
+  confirmación cuando hay una carpeta de cédulas seleccionada y "Fuente
+  cédulas" no es `excel`, explicando que la asignación vendrá de Sheets/BD y
+  no del archivo físico. El usuario puede continuar a propósito o regresar a
+  corregir el dropdown.
+- Alcance: solo GUI (uso interactivo). El CLI (`kpi-run`) no cambia — ahí la
+  fuente se pasa explícita por `--cedulas-source`, sin ambigüedad de UI.
+
 ## 0.6.0 — 2026-06-20 (Atribución día-por-día en "Por Operación" + fila Pendiente + Motrices Utilizadas)
 
 `OpcedulaAggregator` (`domain/opcedula.py`) atribuía el 100% del KM/Diesel/Viajes
