@@ -12,6 +12,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
+from kpi_generator import __version__
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.processor import DataProcessor
 from kpi_generator.gui.theme import get_theme
@@ -22,7 +23,7 @@ class KPIGeneratorGUI:
     
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("KPI Generator v12.2 - OpCedula Period-Aware + Google Sheets")
+        self.root.title(f"KPI Generator v{__version__} - OpCedula Period-Aware + Google Sheets")
         self.root.geometry("900x700")
         self.root.minsize(800, 600)
         
@@ -81,7 +82,7 @@ class KPIGeneratorGUI:
         header_frame.pack_propagate(False)
         
         title_label = tk.Label(header_frame,
-                              text="KPI Generator v12.2",
+                              text=f"KPI Generator v{__version__}",
                               bg=self.colors['bg_primary'],
                               fg=self.colors['text_primary'],
                               font=('Segoe UI', 28, 'bold'))
@@ -157,7 +158,7 @@ class KPIGeneratorGUI:
         
         self.setup_control_panel()
         
-        self.log("Sistema KPI Generator v11 iniciado")
+        self.log(f"Sistema KPI Generator v{__version__} iniciado")
     
     def change_log_level(self, event=None):
         """Cambiar nivel de logging dinámicamente."""
@@ -591,5 +592,5 @@ class KPIGeneratorGUI:
     
     def run(self):
         """Iniciar aplicación."""
-        self.log("[START] KPI Generator v11 iniciado")
+        self.log(f"[START] KPI Generator v{__version__} iniciado")
         self.root.mainloop()
