@@ -231,6 +231,15 @@ def _cmd_audit(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # La consola de Windows (cp1252) no puede encodear glifos como '→' presentes
+    # en los mensajes de log; sin esto, un print() abortaría el run con
+    # UnicodeEncodeError (enmascarado como "Error carga archivos"). Forzar UTF-8.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # stream ya cerrado/redirigido o sin reconfigure (p.ej. pythonw)
+
     parser = _build_parser()
     args = parser.parse_args(argv)
 
