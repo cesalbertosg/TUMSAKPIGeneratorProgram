@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.3 — 2026-07-02 (Fix: cédulas "Cedula completa DDMMYYYY.xlsx" ignoradas + robustez CLI/versión)
+
+Al correr el KPI del corte del 1° de julio (fuente `sheets`), `parse_cedula_filename`
+(`io/excel.py`) no reconocía el archivo físico `Cedula completa 01072026.xlsx`: los
+patrones sólo aceptaban "completa"/sufijos **después** de la fecha
+(`Cedula 01062026 Completa.xlsx`), no **antes**. Resultado: la cédula autoritativa
+guardada a mano se descartaba (`[PHYS] 0 días`) y `load_cedulas_for_period` la
+re-descargaba de Drive API, creando un duplicado con otro nombre.
+
+Fix: se añadió un `infix` opcional (sólo letras) entre "cedula" y la fecha, de modo
+que ambas convenciones se reconocen — antes y después de la fecha, incluso multi-palabra
+(`Cedula completa para auto 05072026.xlsx`). Cubierto en `tests/unit/test_cedula_filename.py`
+(9 casos; suite 145 unit sin regresiones).
+
+Esta versión también incluye dos endurecimientos surgidos del diagnóstico del build
+viejo v0.5.1 que corría en escritorio:
+
+- **CLI UTF-8** (`cli.py`): `main()` reconfigura stdout/stderr a UTF-8. Antes, un glifo
+  como `→` en un log abortaba el run en consolas Windows (cp1252) con `UnicodeEncodeError`,
+  enmascarado como "Error carga archivos". No afectaba a la GUI (widget Tk es Unicode-safe).
+- **Versión visible** (`gui/app.py`): título/header/logs leen `kpi_generator.__version__`
+  en vez de "v12.2"/"v11" hardcodeado, para que un build desactualizado se detecte de inmediato.
+
 ## 0.6.2 — 2026-06-24 (Fix: asignación estática incorrecta con fuente "sheets")
 
 Diagnóstico del reporte de Beto sobre la unidad **C084**: con `--cedulas-source sheets`,

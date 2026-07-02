@@ -44,14 +44,19 @@ def parse_cedula_filename(filename: str) -> Optional[datetime]:
     Devuelve `None` si el archivo no coincide con ningun patron o si la
     fecha extraida no es valida (mes 13, dia 32, etc.).
 
-    Acepta sufijos despues de la fecha (ej. "Cedula 01062026 Completa.xlsx"),
-    formato que Beto guarda manualmente con info extra de operadores.
+    Acepta palabras opcionales tanto ANTES de la fecha ("Cedula completa
+    01072026.xlsx") como DESPUES ("Cedula 01062026 Completa.xlsx"): Beto
+    nombra a mano las cedulas con "completa"/info de operadores en cualquiera
+    de las dos posiciones.
     """
+    # Palabras opcionales (solo letras) entre "cedula" y la fecha, para no
+    # consumir los digitos; cubre "Cedula completa DDMMYYYY.xlsx".
+    infix = r'(?:\s+[a-zà-ÿ]+)*'
     suffix = r'(?:\s+[\wÀ-ÿ]+)*\.xlsx?'
     patterns = [
-        r'cedula\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
-        r'c[eé]dula\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
-        r'cedula\s*(\d{2})(\d{2})(\d{4})' + suffix,
+        r'cedula' + infix + r'\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
+        r'c[eé]dula' + infix + r'\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
+        r'cedula' + infix + r'\s*(\d{2})(\d{2})(\d{4})' + suffix,
     ]
     for pattern in patterns:
         match = re.search(pattern, filename.lower())

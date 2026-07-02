@@ -55,3 +55,19 @@ def test_filename_sin_patron() -> None:
 def test_extension_xls_legacy() -> None:
     """Variantes `.xls` (sin x al final) tambien se reconocen."""
     assert parse_cedula_filename("Cedula 16052026.xls") == datetime(2026, 5, 16)
+
+
+def test_completa_prefijo_antes_de_fecha() -> None:
+    """`Cedula completa 01072026.xlsx` (palabra ANTES de la fecha) — formato julio.
+
+    Regresion: v0.6.2 ignoraba este nombre (solo aceptaba 'completa' como
+    sufijo), descartando la cedula autoritativa y re-bajando de Drive.
+    """
+    assert parse_cedula_filename("Cedula completa 01072026.xlsx") == datetime(2026, 7, 1)
+    assert parse_cedula_filename("Cedula completa 01 07 2026.xlsx") == datetime(2026, 7, 1)
+    assert parse_cedula_filename("Cedula completa para auto 05072026.xlsx") == datetime(2026, 7, 5)
+
+
+def test_completa_sufijo_despues_de_fecha() -> None:
+    """`Cedula 01062026 Completa.xlsx` (palabra DESPUES de la fecha) — formato junio."""
+    assert parse_cedula_filename("Cedula 01062026 Completa.xlsx") == datetime(2026, 6, 1)
