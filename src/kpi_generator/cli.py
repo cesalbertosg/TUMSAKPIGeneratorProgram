@@ -108,6 +108,9 @@ def _cmd_run(args) -> int:
 
     cedulas_arg = str(args.cedulas) if args.cedulas else ""
 
+    fuente_solicitada = (args.cedulas_source or Config.CEDULAS_SOURCE).lower()
+    print(f"[SRC] Fuente de cédulas solicitada: {fuente_solicitada}")
+
     result = processor.generate_report(
         str(args.trips),
         str(args.fuel),
@@ -119,6 +122,8 @@ def _cmd_run(args) -> int:
     )
 
     if result:
+        if processor.last_lineage is not None:
+            print(f"[SRC] {processor.last_lineage.resumen_linea()}")
         print(f"[OK] Reporte generado: {result}")
         return 0
     print("[ERR] El procesamiento falló — revisa el log.", file=sys.stderr)

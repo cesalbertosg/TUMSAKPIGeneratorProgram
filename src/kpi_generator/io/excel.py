@@ -6,8 +6,9 @@ respetar el sistema de logging del caller.
 
 Publico:
 - `parse_cedula_filename(filename)` -> datetime | None
+- `parse_cedula_filename_ex(filename)` -> ParsedCedula(fecha, variante) | None
 - `fill_missing_dates(df_cedulas)` -> DataFrame (forward-fill por fecha)
-- `load_daily_cedulas(folder, log_callback)` -> DataFrame | None
+- `load_daily_cedulas(folder, log_callback, *, lineage=None)` -> DataFrame | None
 - `save_cedula_as_completa(df_cedulas, folder, log_callback)` -> None
 - `load_local_cedulas_for_crossfill(folder, log_callback)` -> DataFrame
 - `crossfill_cedulas(df_primary, df_local, log_callback)` -> (DataFrame, list)
@@ -20,20 +21,28 @@ import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 import pandas as pd
 
 from kpi_generator.config import Config, LogLevel
+from kpi_generator.lineage import ArchivoCedula, CedulaLineage
 
 # Tipo del callback de logging usado por las funciones de este modulo.
 # Firma: log(message: str, level: LogLevel = INFO, code: str | None = None)
 LogCallback = Callable[..., None]
 
 
+class ParsedCedula(NamedTuple):
+    """Resultado de `parse_cedula_filename_ex`."""
+
+    fecha: datetime
+    variante: str  # 'diario' | 'variante'
+
+
 @lru_cache(maxsize=128)
-def parse_cedula_filename(filename: str) -> Optional[datetime]:
-    """Extraer fecha del nombre de archivo de cedula.
+def parse_cedula_filename_ex(filename: str) -> Optional[ParsedCedula]:
+    """Extraer fecha Y tipo de variante del nombre de archivo de cedula.
 
     Reconoce los formatos historicos del proyecto:
     - `Cedula DDMMYYYY.xlsx` (canonico)
@@ -41,18 +50,21 @@ def parse_cedula_filename(filename: str) -> Optional[datetime]:
     - `Cédula DDMMYYYY.xlsx` (con tilde)
     - `.xls` legacy.
 
+    Clasificacion (v0.6.4):
+    - `variante='diario'`: nombre canonico sin palabras extra — la cedula
+      fisica guardada a mano, autoritativa.
+    - `variante='variante'`: cualquier palabra extra antes o despues de la
+      fecha ("Cedula completa 01072026.xlsx", "Cedula 01062026 Completa.xlsx")
+      — tipicamente descargas de Drive; en fusion solo rellenan vacios.
+
     Devuelve `None` si el archivo no coincide con ningun patron o si la
     fecha extraida no es valida (mes 13, dia 32, etc.).
-
-    Acepta palabras opcionales tanto ANTES de la fecha ("Cedula completa
-    01072026.xlsx") como DESPUES ("Cedula 01062026 Completa.xlsx"): Beto
-    nombra a mano las cedulas con "completa"/info de operadores en cualquiera
-    de las dos posiciones.
     """
     # Palabras opcionales (solo letras) entre "cedula" y la fecha, para no
-    # consumir los digitos; cubre "Cedula completa DDMMYYYY.xlsx".
-    infix = r'(?:\s+[a-zà-ÿ]+)*'
-    suffix = r'(?:\s+[\wÀ-ÿ]+)*\.xlsx?'
+    # consumir los digitos; cubre "Cedula completa DDMMYYYY.xlsx". Capturadas
+    # para clasificar diario vs variante.
+    infix = r'((?:\s+[a-zà-ÿ]+)*)'
+    suffix = r'((?:\s+[\wÀ-ÿ]+)*)\.xlsx?'
     patterns = [
         r'cedula' + infix + r'\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
         r'c[eé]dula' + infix + r'\s*(\d{1,2})\s*(\d{1,2})\s*(\d{4})' + suffix,
@@ -61,12 +73,26 @@ def parse_cedula_filename(filename: str) -> Optional[datetime]:
     for pattern in patterns:
         match = re.search(pattern, filename.lower())
         if match:
+            extra_infix, day, month, year, extra_suffix = match.groups()
             try:
-                day, month, year = map(int, match.groups())
-                return datetime(year, month, day)
+                fecha = datetime(int(year), int(month), int(day))
             except ValueError:
                 continue
+            es_variante = bool(extra_infix.strip() or extra_suffix.strip())
+            return ParsedCedula(fecha, 'variante' if es_variante else 'diario')
     return None
+
+
+@lru_cache(maxsize=128)
+def parse_cedula_filename(filename: str) -> Optional[datetime]:
+    """Extraer fecha del nombre de archivo de cedula (wrapper histórico).
+
+    Delegado a `parse_cedula_filename_ex`; conserva la firma original
+    (solo fecha) que usan `io.sheets`, `save_cedula_as_completa`,
+    `load_local_cedulas_for_crossfill`, la GUI y el CLI `diff-cedulas`.
+    """
+    parsed = parse_cedula_filename_ex(filename)
+    return parsed.fecha if parsed else None
 
 
 def fill_missing_dates(df_cedulas: pd.DataFrame) -> pd.DataFrame:
@@ -107,11 +133,101 @@ def fill_missing_dates(df_cedulas: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(fill_frames, ignore_index=True)
 
 
-def load_daily_cedulas(cedulas_folder: str, log: LogCallback) -> Optional[pd.DataFrame]:
+def _fusionar_cedulas_mismo_dia(
+    entradas: list[tuple[ArchivoCedula, pd.DataFrame]],
+    log: LogCallback,
+    lineage: Optional[CedulaLineage] = None,
+) -> pd.DataFrame:
+    """Fusion complementaria de varios archivos fisicos de la MISMA fecha.
+
+    Regla v0.6.4 ("fisico manda al 100%"):
+    - base = el archivo 'diario' (autoritativo campo por campo); con 2+
+      diarios gana el de mtime mas reciente (resto 'descartado'); sin
+      diarios, base = la variante de mtime mas reciente.
+    - las variantes solo RELLENAN celdas vacias de la base (reutiliza
+      `crossfill_cedulas`, que nunca pisa un valor presente).
+    - unidades presentes solo en la variante NO se agregan: el diario
+      define el universo de unidades del dia (decision (a) del plan).
+
+    Las claves se normalizan (strip+upper) solo para el cruce; los valores
+    de `Unidades` del archivo base se conservan tal cual.
+    """
+    diarios = [(a, df) for a, df in entradas if a.variante == 'diario']
+    variantes = [(a, df) for a, df in entradas if a.variante == 'variante']
+
+    if diarios:
+        diarios.sort(key=lambda e: e[0].mtime, reverse=True)
+        base_arch, base_df = diarios[0]
+        for arch, _df in diarios[1:]:
+            arch.rol = 'descartado'
+            arch.detalle = 'diario duplicado de la misma fecha (mtime anterior)'
+            log(f"Diario duplicado descartado: {arch.nombre}", LogLevel.ERROR, "WARN")
+        complementos = variantes
+    else:
+        variantes.sort(key=lambda e: e[0].mtime, reverse=True)
+        base_arch, base_df = variantes[0]
+        complementos = variantes[1:]
+
+    base_arch.rol = 'base'
+    base_df = base_df.copy()
+    base_df['_unidades_orig'] = base_df['Unidades']
+    base_df['Unidades'] = base_df['Unidades'].astype(str).str.strip().str.upper()
+    base_keys = set(base_df['Unidades'])
+
+    for arch, comp_df in complementos:
+        comp_df = comp_df.copy()
+        comp_df['Unidades'] = comp_df['Unidades'].astype(str).str.strip().str.upper()
+        comp_df = comp_df.drop_duplicates(subset=['Unidades', 'Fecha Cedula_dt'], keep='first')
+        solo_variante = sorted(set(comp_df['Unidades']) - base_keys)
+
+        # Columnas que la variante trae y la base no (p. ej. Operador en
+        # diarios de 6 columnas): se crean vacias en la base para que el
+        # crossfill pueda aportarlas — sigue sin pisar nada del diario.
+        aportables = [
+            c for c in Config.COLUMNS["units"][1:] + Config.COLUMNS["units_extra"]
+            if c in comp_df.columns and c not in base_df.columns
+        ]
+        for col in aportables:
+            base_df[col] = None
+
+        base_df, fills = crossfill_cedulas(base_df, comp_df, log)
+
+        arch.rol = 'complemento'
+        detalles = [f"{len(fills)} celdas completadas en la base"]
+        if solo_variante:
+            detalles.append(f"{len(solo_variante)} unidades solo-variante ignoradas")
+        arch.detalle = "; ".join(detalles)
+
+        if lineage is not None:
+            lineage.fusion_fills.extend(fills)
+            if solo_variante:
+                muestra = ", ".join(solo_variante[:5]) + ("…" if len(solo_variante) > 5 else "")
+                lineage.advertencias.append(
+                    f"{arch.nombre}: {len(solo_variante)} unidades solo en la variante "
+                    f"no se agregaron ({muestra})"
+                )
+        log(f"Fusión {base_arch.nombre} + {arch.nombre}: {arch.detalle}", code="FUSION")
+
+    base_df['Unidades'] = base_df['_unidades_orig']
+    return base_df.drop(columns=['_unidades_orig'])
+
+
+def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
+                       lineage: Optional[CedulaLineage] = None) -> Optional[pd.DataFrame]:
     """Cargar y consolidar cedulas diarias desde una carpeta de .xlsx.
 
     Cada archivo `Cedula DDMMYYYY.xlsx` aporta una fecha. Las fechas ausentes
     en el rango se rellenan con `fill_missing_dates`.
+
+    Blindaje v0.6.4 ("fisico manda al 100%"):
+    - Los archivos se agrupan por fecha; si conviven un diario y variantes
+      ("Completa") de la misma fecha se fusionan de forma complementaria
+      (`_fusionar_cedulas_mismo_dia`) — antes ambos entraban al concat y
+      duplicaban viajes en el merge aguas abajo.
+    - Unidad repetida dentro de un mismo archivo → keep-first + WARN.
+    - Invariante post-consolidacion: (Unidades, Fecha Cedula_dt) unico;
+      si se viola → falla dura (None).
+    - `lineage` (opcional) acumula trazabilidad para la hoja "Fuente Cedulas".
 
     Devuelve `None` ante cualquier error (carpeta invalida, archivos con
     formato no reconocido, columnas faltantes, etc.) — el caller debe
@@ -126,12 +242,12 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback) -> Optional[pd.Dat
             return None
 
         cedula_files = [
-            (file_path, parse_cedula_filename(file_path.name))
+            (file_path, parse_cedula_filename_ex(file_path.name))
             for file_path in folder_path.glob("*.xlsx")
         ]
 
-        valid_files = [(f, d) for f, d in cedula_files if d is not None]
-        invalid_files = [f.name for f, d in cedula_files if d is None]
+        valid_files = [(f, p) for f, p in cedula_files if p is not None]
+        invalid_files = [f.name for f, p in cedula_files if p is None]
 
         if invalid_files:
             log(f"Archivos formato inválido: {len(invalid_files)}", LogLevel.ERROR, "ERR")
@@ -141,12 +257,27 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback) -> Optional[pd.Dat
             log("Sin archivos válidos", LogLevel.ERROR, "ERR")
             return None
 
-        valid_files.sort(key=lambda x: x[1])
+        # Deteccion de carpeta sospechosa (la trampa del incidente de junio:
+        # correr modo excel sobre una carpeta de descargas de Drive).
+        n_diarios = sum(1 for _f, p in valid_files if p.variante == 'diario')
+        n_variantes = len(valid_files) - n_diarios
+        if n_diarios and n_variantes:
+            log(f"Carpeta mixta: {n_diarios} diarios + {n_variantes} variantes — "
+                "el diario manda; la variante solo rellena vacíos",
+                LogLevel.ERROR, "WARN")
+            if lineage is not None:
+                lineage.carpeta_mixta = True
+        elif n_variantes and not n_diarios:
+            msg = (f"La carpeta contiene SOLO variantes 'Completa' ({n_variantes} archivos) "
+                   "— verifica que sea la carpeta de cédulas físicas diarias")
+            log(msg, LogLevel.ERROR, "WARN")
+            if lineage is not None:
+                lineage.advertencias.append(msg)
 
-        consolidated_cedulas = []
         required_cols = Config.COLUMNS["units"]
+        por_fecha: dict[datetime, list[tuple[ArchivoCedula, pd.DataFrame]]] = {}
 
-        for file_path, fecha in valid_files:
+        for file_path, parsed in sorted(valid_files, key=lambda x: (x[1].fecha, x[0].name)):
             try:
                 df = pd.read_excel(file_path)
 
@@ -160,16 +291,72 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback) -> Optional[pd.Dat
                         LogLevel.ERROR, "ERR")
                     return None
 
+                fecha = parsed.fecha
                 df['Fecha Cedula'] = fecha.strftime("%d/%m/%Y")
                 df['Fecha Cedula_dt'] = fecha
-                consolidated_cedulas.append(df)
+
+                # Unidad repetida dentro del mismo archivo → keep-first + WARN
+                # (decision (b) del plan: no bloquear produccion por un typo).
+                key = df['Unidades'].astype(str).str.strip().str.upper()
+                dup_mask = key.duplicated(keep='first')
+                if dup_mask.any():
+                    duplicadas = sorted(key[dup_mask].unique())
+                    muestra = ", ".join(duplicadas[:5]) + ("…" if len(duplicadas) > 5 else "")
+                    log(f"{file_path.name}: {len(duplicadas)} unidades repetidas "
+                        f"(se conservó la primera): {muestra}", LogLevel.ERROR, "WARN")
+                    if lineage is not None:
+                        for unidad in duplicadas:
+                            lineage.dedup_intra.append((unidad, fecha, file_path.name))
+                    df = df.loc[~dup_mask].reset_index(drop=True)
+
+                archivo = ArchivoCedula(
+                    nombre=file_path.name,
+                    fecha=fecha,
+                    variante=parsed.variante,
+                    mtime=datetime.fromtimestamp(file_path.stat().st_mtime),
+                    filas=len(df),
+                )
+                por_fecha.setdefault(fecha, []).append((archivo, df))
 
             except Exception as e:
                 log(f"Error procesando {file_path.name}: {e}", LogLevel.ERROR, "ERR")
                 return None
 
+        consolidated_cedulas = []
+        for fecha in sorted(por_fecha):
+            entradas = por_fecha[fecha]
+            if len(entradas) == 1:
+                entradas[0][0].rol = 'unico'
+                consolidated_cedulas.append(entradas[0][1])
+            else:
+                consolidated_cedulas.append(_fusionar_cedulas_mismo_dia(entradas, log, lineage))
+            if lineage is not None:
+                lineage.archivos.extend(a for a, _df in entradas)
+
         df_cedulas = pd.concat(consolidated_cedulas, ignore_index=True)
+
+        # Invariante v0.6.4: (Unidades, Fecha) unico tras consolidar — un
+        # duplicado aqui multiplica viajes en el merge aguas abajo, asi que
+        # es preferible no generar reporte a generar uno inflado.
+        clave = (df_cedulas['Unidades'].astype(str).str.strip().str.upper()
+                 + '|' + df_cedulas['Fecha Cedula_dt'].astype(str))
+        duplicados = clave[clave.duplicated()]
+        if not duplicados.empty:
+            log(f"Invariante violado: {duplicados.nunique()} pares (Unidad, Fecha) "
+                f"duplicados tras consolidar (ej. {duplicados.iloc[0]}) — "
+                "abortando para no duplicar viajes", LogLevel.ERROR, "ERR")
+            return None
+
+        fechas_fisicas = sorted(por_fecha)
         df_cedulas = fill_missing_dates(df_cedulas)
+
+        if lineage is not None:
+            lineage.fechas_fisicas = list(fechas_fisicas)
+            fisicas_ts = {pd.Timestamp(f) for f in fechas_fisicas}
+            lineage.fechas_ffill = sorted(
+                pd.Timestamp(d) for d in pd.to_datetime(df_cedulas['Fecha Cedula_dt']).unique()
+                if pd.Timestamp(d) not in fisicas_ts
+            )
 
         log(f"Cédulas: {len(df_cedulas)} registros", code="OK")
         return df_cedulas
@@ -290,6 +477,10 @@ def crossfill_cedulas(
 
     merge_cols = ['Unidades', 'Fecha Cedula_dt']
     df_local_subset = df_local[merge_cols + fillable_cols].copy()
+    # Dos archivos locales que resuelvan a la misma fecha duplicarian la
+    # clave y el merge left multiplicaria filas del primario (producto
+    # cartesiano de viajes aguas abajo).
+    df_local_subset = df_local_subset.drop_duplicates(subset=merge_cols, keep='first')
 
     # pandas 3 infiere dtype 'str' para columnas de texto (no 'object'); ese
     # dtype solo acepta strings/NA y revienta con TypeError si la cedula

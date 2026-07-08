@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from kpi_generator.io.excel import parse_cedula_filename
+from kpi_generator.io.excel import parse_cedula_filename, parse_cedula_filename_ex
 
 
 def test_formato_canonico() -> None:
@@ -71,3 +71,38 @@ def test_completa_prefijo_antes_de_fecha() -> None:
 def test_completa_sufijo_despues_de_fecha() -> None:
     """`Cedula 01062026 Completa.xlsx` (palabra DESPUES de la fecha) — formato junio."""
     assert parse_cedula_filename("Cedula 01062026 Completa.xlsx") == datetime(2026, 6, 1)
+
+
+# ---------- parse_cedula_filename_ex (v0.6.4): clasificacion diario/variante ----------
+
+def test_ex_nombre_canonico_es_diario() -> None:
+    """Nombre canonico sin palabras extra -> variante='diario'."""
+    parsed = parse_cedula_filename_ex("Cedula 16052026.xlsx")
+    assert parsed is not None
+    assert parsed.fecha == datetime(2026, 5, 16)
+    assert parsed.variante == 'diario'
+
+
+def test_ex_separadores_y_tilde_siguen_siendo_diario() -> None:
+    """Espacios en la fecha o tilde no convierten el nombre en variante."""
+    assert parse_cedula_filename_ex("Cedula 3 6 2026.xlsx").variante == 'diario'
+    assert parse_cedula_filename_ex("Cédula 01012026.xlsx").variante == 'diario'
+    assert parse_cedula_filename_ex("CEDULA 03062026.XLSX").variante == 'diario'
+
+
+def test_ex_palabra_extra_es_variante() -> None:
+    """Cualquier palabra extra (antes o despues de la fecha) -> 'variante'."""
+    assert parse_cedula_filename_ex("Cedula 01062026 Completa.xlsx").variante == 'variante'
+    assert parse_cedula_filename_ex("Cedula completa 01072026.xlsx").variante == 'variante'
+    assert parse_cedula_filename_ex("Cedula completa para auto 05072026.xlsx").variante == 'variante'
+
+
+def test_ex_fechas_coinciden_con_wrapper() -> None:
+    """El wrapper historico devuelve exactamente la fecha del _ex."""
+    for nombre in ["Cedula 16052026.xlsx", "Cedula 01062026 Completa.xlsx"]:
+        assert parse_cedula_filename(nombre) == parse_cedula_filename_ex(nombre).fecha
+
+
+def test_ex_invalido_devuelve_none() -> None:
+    assert parse_cedula_filename_ex("Reporte.xlsx") is None
+    assert parse_cedula_filename_ex("Cedula 01132026.xlsx") is None

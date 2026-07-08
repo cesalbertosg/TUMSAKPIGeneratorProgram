@@ -274,3 +274,61 @@ Cubierto sin cambios: si `load_local_cedulas_for_crossfill` devuelve vacío,
 forward-fillado) se usa tal cual para todo el período acotado — equivalente
 a "tratar la cédula de Sheets actual como si no hubiera sufrido cambios todo
 el periodo". No aplica a la fuente `db`.
+
+## Fusión complementaria y linaje (v0.6.4)
+
+Origen: incidente del cierre de junio 2026 — un reporte "en modo excel" mostró
+asignaciones del Sheet porque la corrida usó una carpeta de descargas "Completa"
+en lugar de los diarios físicos, sin dejar rastro. Regla de negocio blindada:
+**las cédulas físicas diarias mandan al 100%**.
+
+### Clasificación de archivos (`parse_cedula_filename_ex`)
+
+- `diario`: nombre canónico `Cedula DDMMYYYY.xlsx` (tolera tilde, espacios en
+  la fecha, `.xls`) sin palabras extra — la cédula guardada a mano, autoritativa.
+- `variante`: cualquier palabra extra antes o después de la fecha
+  (`Cedula 01062026 Completa.xlsx`, `Cedula completa 01072026.xlsx`) —
+  típicamente descargas de Drive.
+
+### Fusión de duplicados de la misma fecha (`_fusionar_cedulas_mismo_dia`)
+
+1. Base = el `diario` (con 2+ diarios gana el de mtime más reciente; el resto
+   queda `descartado`). Sin diarios, base = la variante más reciente.
+2. Las variantes solo **rellenan celdas vacías** de la base (reutiliza
+   `crossfill_cedulas`; columnas que la base no trae, como Operador en diarios
+   de 6 columnas, se crean vacías para que la variante pueda aportarlas).
+3. Unidades presentes solo en la variante **no se agregan**: el diario define
+   el universo de unidades del día (evita que una descarga vieja re-meta
+   unidades borradas a propósito). Quedan contadas como advertencia.
+4. Cada fill se registra como inconsistencia "Completado por fusión con
+   variante Completa (mismo día)".
+
+### Invariantes y advertencias del loader excel
+
+- (Unidades, Fecha) **único** tras consolidar — si se viola, falla dura
+  (`return None`): un duplicado multiplica viajes en el merge aguas abajo.
+- Unidad repetida dentro de un mismo archivo → keep-first + WARN +
+  Inconsistencias (no bloquea producción por un typo).
+- Carpeta mixta (diarios + variantes) → WARN; carpeta con SOLO variantes →
+  WARN explícito (la trampa del incidente).
+
+### Linaje (`lineage.py` → hoja "Fuente Cedulas")
+
+`CedulaLineage` se crea en `load_data`, viaja como parámetro acumulador por
+`_load_cedulas_by_source` (incluida la recursión del fallback db→sheets→excel)
+y registra: fuente solicitada/efectiva, carpeta, archivos (variante, rol,
+filas, mtime), fechas por origen (físico/fusión/Drive/ffill), fallbacks y
+advertencias. Se publica como hoja "Fuente Cedulas" (solo Excel local, no se
+sube a Sheets) y como resumen de una línea en log `[SRC]`, CLI y diálogo de
+éxito de la GUI. El dropdown de la GUI recuerda la última fuente usada en
+`%APPDATA%\KPI Generator\gui_state.json` (el `.env` solo decide la primera
+sesión).
+
+### Orden de precedencia consolidado (fuente `excel`, v0.6.4)
+
+```
+1. Cédula física diaria (Cedula DDMMYYYY.xlsx)         [autoritativa]
+2. Variante "Completa" de la misma fecha                [solo rellena vacíos]
+3. fill_missing_dates (forward-fill entre físicos)      [último recurso]
+4. _apply_cedula_fallbacks (capa universal, sin cambios)
+```

@@ -31,7 +31,8 @@ import requests as _req
 from google.oauth2.service_account import Credentials
 
 from kpi_generator.config import Config, LogLevel
-from kpi_generator.io.excel import fill_missing_dates, parse_cedula_filename
+from kpi_generator.io.excel import fill_missing_dates, parse_cedula_filename, parse_cedula_filename_ex
+from kpi_generator.lineage import ArchivoCedula, CedulaLineage
 
 LogCallback = Callable[..., None]
 
@@ -510,6 +511,7 @@ def load_cedulas_for_period(
     fecha_max: date,
     tab_name: Optional[str] = None,
     cedulas_folder: Optional[str] = None,
+    lineage: Optional[CedulaLineage] = None,
 ) -> Optional[pd.DataFrame]:
     """Carga cédulas para [fecha_min, fecha_max] con prioridad por fecha:
     1. Archivo físico en cedulas_folder (autoritativo — cédulas guardadas a mano)
@@ -517,6 +519,8 @@ def load_cedulas_for_period(
     3. forward-fill para gaps residuales
 
     Reemplaza load_cedula_from_sheet en el flujo source='sheets'.
+    `lineage` (opcional, v0.6.4) acumula la trazabilidad: archivos físicos
+    leídos, fechas cubiertas por Drive y fechas que quedaron a forward-fill.
     """
     n_days = (fecha_max - fecha_min).days + 1
     all_dates = [fecha_min + timedelta(days=i) for i in range(n_days)]
@@ -525,16 +529,17 @@ def load_cedulas_for_period(
     # Paso 1: archivos físicos ya en carpeta para el rango
     # ------------------------------------------------------------------
     dates_physical: dict[date, pd.DataFrame] = {}
+    archivos_por_fecha: dict[date, ArchivoCedula] = {}
     folder_path: Optional[Path] = None
 
     if cedulas_folder:
         folder_path = Path(cedulas_folder)
         if folder_path.exists() and folder_path.is_dir():
             for f in sorted(folder_path.glob("*.xlsx")):
-                dt = parse_cedula_filename(f.name)
-                if dt is None:
+                parsed = parse_cedula_filename_ex(f.name)
+                if parsed is None:
                     continue
-                d = dt.date()
+                d = parsed.fecha.date()
                 if not (fecha_min <= d <= fecha_max):
                     continue
                 try:
@@ -548,10 +553,25 @@ def load_cedulas_for_period(
                     df_f['Fecha Cedula'] = d.strftime('%d/%m/%Y')
                     df_f['Fecha Cedula_dt'] = pd.Timestamp(d)
                     dates_physical[d] = df_f
+                    if lineage is not None:
+                        archivo = ArchivoCedula(
+                            nombre=f.name, fecha=d, variante=parsed.variante,
+                            mtime=datetime.fromtimestamp(f.stat().st_mtime),
+                            filas=len(df_f),
+                        )
+                        previo = archivos_por_fecha.get(d)
+                        if previo is not None:
+                            previo.rol = 'descartado'
+                            previo.detalle = ('reemplazado por otro archivo de la misma '
+                                              'fecha (orden del glob)')
+                        archivos_por_fecha[d] = archivo
+                        lineage.archivos.append(archivo)
                 except Exception:
                     continue
 
     n_phys = len(dates_physical)
+    if lineage is not None:
+        lineage.fechas_fisicas = sorted(dates_physical)
     log(
         f"Archivos físicos en rango: {n_phys} días"
         + (f" ({min(dates_physical)} → {max(dates_physical)})" if dates_physical else ""),
@@ -577,6 +597,9 @@ def load_cedulas_for_period(
         log(f"Error conectando a Sheets/Drive API: {e}", LogLevel.ERROR, "ERR")
         if dates_physical:
             log("Usando solo archivos físicos disponibles", LogLevel.ERROR, "WARN")
+            if lineage is not None:
+                lineage.advertencias.append(f"Sheets/Drive inaccesible ({e}): solo archivos físicos")
+                lineage.fechas_ffill = sorted(d for d in all_dates if d not in dates_physical)
             df = pd.concat(list(dates_physical.values()), ignore_index=True)
             df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula_dt'])
             return _finalize_cedulas_df(df)
@@ -627,6 +650,8 @@ def load_cedulas_for_period(
             df_d['Fecha Cedula_dt'] = pd.Timestamp(d)
             dates_physical[d] = df_d
             n_drive_added += 1
+            if lineage is not None:
+                lineage.fechas_drive.append(d)
 
             # Guardar xlsx en carpeta para reusar en futuras ejecuciones
             if folder_path is not None:
@@ -647,6 +672,8 @@ def load_cedulas_for_period(
     # Paso 4: reporte de cobertura
     # ------------------------------------------------------------------
     n_gap = sum(1 for d in all_dates if d not in dates_physical)
+    if lineage is not None:
+        lineage.fechas_ffill = sorted(d for d in all_dates if d not in dates_physical)
     log(
         f"Cobertura cédulas: {n_phys} físicos, {n_drive_added} Drive API"
         + (f", {n_gap} gap (forward-fill)" if n_gap else ", cobertura completa"),

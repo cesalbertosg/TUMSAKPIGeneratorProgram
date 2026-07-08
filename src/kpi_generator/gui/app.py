@@ -36,10 +36,15 @@ class KPIGeneratorGUI:
             "objectives": tk.StringVar(),
             "output": tk.StringVar()
         }
+        # Arranque del dropdown (v0.6.4): última selección guardada >
+        # .env CEDULAS_SOURCE (este solo decide la primera sesión). Evita que
+        # el default del .env (db) pise silenciosamente la elección habitual.
+        _default_source = self._load_last_source() or Config.CEDULAS_SOURCE
         # Si psycopg2 no esta instalado (distribuciones standalone sin BD),
         # forzamos arranque en "excel". El dropdown ocultara la opcion "db".
-        _default_source = Config.CEDULAS_SOURCE
         if _default_source == "db" and not Config.db_available():
+            _default_source = "excel"
+        if _default_source not in ("db", "excel", "sheets"):
             _default_source = "excel"
         self.cedulas_source = tk.StringVar(value=_default_source)
         # Default: sí sube a Google Sheets al terminar (igual que antes del v0.5.1).
@@ -278,7 +283,52 @@ class KPIGeneratorGUI:
         )
         combo.pack(fill="both", padx=12, pady=6)
 
+        # Indicador visual de la fuente activa (v0.6.4): imposible confundir
+        # de dónde saldrá la asignación de unidades.
+        self.source_indicator = tk.Label(
+            row, text='', bg=self.colors['bg_card'],
+            font=('Segoe UI', 9, 'bold'), anchor='w', width=34,
+        )
+        self.source_indicator.pack(side="left", padx=(0, 10))
+        combo.bind('<<ComboboxSelected>>', self._on_source_changed)
+        self._update_source_indicator()
+
         return row
+
+    def _update_source_indicator(self):
+        """Refresca el texto/color del indicador según la fuente seleccionada."""
+        textos = {
+            'excel': ('EXCEL — carpeta física manda', self.colors['accent_success']),
+            'sheets': ('SHEETS — asignación desde Drive', '#f59e0b'),
+            'db': ('DB — PostgreSQL', self.colors['accent_info']),
+        }
+        source = self.cedulas_source.get()
+        texto, color = textos.get(source, (source.upper(), self.colors['text_secondary']))
+        self.source_indicator.config(text=texto, fg=color)
+
+    def _on_source_changed(self, _event=None):
+        self._update_source_indicator()
+        self._save_gui_state()
+        self.log(f"[SRC] Fuente cédulas: {self.cedulas_source.get()}")
+
+    def _load_last_source(self):
+        """Última fuente usada (Config.GUI_STATE_PATH). Best-effort: None si no hay."""
+        try:
+            import json
+            with open(Config.GUI_STATE_PATH, encoding='utf-8') as fh:
+                return json.load(fh).get('cedulas_source')
+        except Exception:
+            return None
+
+    def _save_gui_state(self):
+        """Persiste la selección actual. Best-effort: nunca aborta la GUI."""
+        try:
+            import json
+            Config.GUI_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(Config.GUI_STATE_PATH, 'w', encoding='utf-8') as fh:
+                json.dump({'cedulas_source': self.cedulas_source.get()}, fh)
+        except Exception:
+            pass
 
     def setup_control_panel(self):
         """Configurar panel de control optimizado."""
@@ -374,9 +424,10 @@ class KPIGeneratorGUI:
     
     def clear_cache(self):
         """Limpiar cache del procesador."""
-        from kpi_generator.io.excel import parse_cedula_filename
+        from kpi_generator.io.excel import parse_cedula_filename, parse_cedula_filename_ex
         self.processor._get_operacion_cedula.cache_clear()
         parse_cedula_filename.cache_clear()
+        parse_cedula_filename_ex.cache_clear()
         self.processor._get_daily_objective.cache_clear()
         self.processor._objective_cache.clear()
         self.processor._cedula_cache.clear()
@@ -530,7 +581,8 @@ class KPIGeneratorGUI:
         """Iniciar proceso de análisis."""
         if not self.validate_inputs():
             return
-        
+
+        self._save_gui_state()  # la fuente con la que se corre es la que se recuerda
         self.process_btn.config(state="disabled", text="⏳ PROCESANDO...")
         self.progress.start(10)
         
@@ -564,8 +616,27 @@ class KPIGeneratorGUI:
         
         if result:
             self.log("[SUCCESS] Análisis completado")
-            if messagebox.askyesno("Proceso Completado", 
-                                 f"Reporte generado:\n{Path(result).name}\n\n¿Desea abrir el archivo?"):
+            lineage = getattr(self.processor, 'last_lineage', None)
+            resumen_fuente = ""
+            if lineage is not None:
+                resumen_fuente = f"\n\nFuente de cédulas:\n{lineage.resumen_linea()}"
+                # Fallback de fuente o carpeta sospechosa: aviso imposible de
+                # no ver ANTES del diálogo de éxito (v0.6.4).
+                alertas = list(lineage.fallbacks)
+                if lineage.carpeta_mixta:
+                    alertas.append("Carpeta mixta: diarios + variantes 'Completa' "
+                                   "(el diario mandó; la variante solo rellenó vacíos)")
+                alertas.extend(lineage.advertencias)
+                if alertas:
+                    messagebox.showwarning(
+                        "Revisa la fuente de cédulas",
+                        "El reporte se generó, pero la carga de cédulas tuvo "
+                        "avisos:\n\n- " + "\n- ".join(str(a) for a in alertas)
+                        + "\n\nEl detalle quedó en la hoja 'Fuente Cedulas' del reporte.",
+                    )
+            if messagebox.askyesno("Proceso Completado",
+                                 f"Reporte generado:\n{Path(result).name}"
+                                 f"{resumen_fuente}\n\n¿Desea abrir el archivo?"):
                 self.open_file(result)
         else:
             messagebox.showerror("Error de Procesamiento", "Error durante el análisis")

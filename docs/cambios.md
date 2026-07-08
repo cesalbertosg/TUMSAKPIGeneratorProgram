@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.6.4 — 2026-07-08 (Trazabilidad de cédulas + fusión complementaria: "el físico manda al 100%")
+
+Diagnóstico con el cierre de junio: un reporte generado creyendo estar en modo
+`excel` mostró asignaciones del Sheet (C135/C137 el 07/06 con Operación "ZORRO"
+cuando la cédula física dice "OFICCE MAX"). La causa NO fue el loader excel —
+apuntado a la carpeta correcta respeta el físico al 100% — sino que el generador
+podía correr con fuente/carpeta distinta a la creída (el dropdown de la GUI
+arrancaba en el default del `.env` cada sesión, fallback silencioso
+`db→sheets→excel`, carpeta de descargas "Completa" elegida por error) y el output
+no dejaba NINGUNA traza de qué cédulas usó. Plan de origen: `plan.md`; el plan de
+relleno Drive quedó diferido en `docs/plan-relleno-drive-modo-excel.md`.
+
+### Trazabilidad — nueva hoja "Fuente Cedulas"
+
+- Nuevo módulo `lineage.py` (`CedulaLineage`/`ArchivoCedula`): cada corrida
+  registra fuente solicitada y efectiva, carpeta, archivos cargados (diario vs
+  variante, rol en la fusión, filas, fecha de modificación), fechas cubiertas por
+  físico/Drive/forward-fill, fallbacks y advertencias.
+- Hoja "Fuente Cedulas" al final del Excel de salida (NO se sube a Google Sheets,
+  mismo criterio que "Cedulas Rellenadas"); resumen de una línea en el log
+  `[SRC]`, al final del CLI y en el diálogo de éxito de la GUI.
+- La cadena de fallback `db→sheets→excel` se mantiene no-bloqueante, pero queda
+  registrada en el linaje y visible (showwarning en la GUI).
+
+### Fusión complementaria + invariante de unicidad (`io/excel.py`)
+
+- `parse_cedula_filename_ex` clasifica `diario` (nombre canónico) vs `variante`
+  (cualquier palabra extra: "Completa", etc.). `parse_cedula_filename` queda como
+  wrapper — misma firma para sheets/CLI/GUI/tests.
+- `load_daily_cedulas` agrupa por fecha: si conviven diario + variantes de la
+  misma fecha se fusionan — **el diario manda campo por campo; la variante solo
+  rellena celdas vacías** (p. ej. Operador, que el diario de 6 columnas no trae;
+  reutiliza `crossfill_cedulas`). Unidades presentes solo en la variante NO se
+  agregan (el diario define el universo del día). Antes, ambos archivos entraban
+  al concat → producto cartesiano en el merge con viajes (viajes duplicados).
+- Invariante duro post-consolidación: (Unidades, Fecha) único; si se viola →
+  falla dura (mejor ningún reporte que uno inflado). Unidad repetida DENTRO de
+  un archivo → keep-first + WARN + hoja Inconsistencias.
+- WARN de carpeta mixta (diarios + variantes) y de carpeta con SOLO variantes —
+  la trampa exacta del incidente de junio.
+- `crossfill_cedulas` ahora deduplica el frame local antes del merge (cerraba el
+  mismo producto cartesiano por la puerta de la fuente `sheets`).
+
+### Guardrails GUI/CLI
+
+- El dropdown "Fuente cédulas" recuerda la última selección en
+  `%APPDATA%\KPI Generator\gui_state.json`; el `.env` solo decide la primera
+  sesión (antes arrancaba en `db` cada vez).
+- Indicador visual junto al combo: `EXCEL — carpeta física manda` (verde) /
+  `SHEETS — asignación desde Drive` (ámbar) / `DB — PostgreSQL` (azul).
+- `kpi-run run` imprime la fuente solicitada al inicio y el resumen de linaje al
+  final.
+- `generate_report` limpia `_inconsistencias` al arrancar: corridas sucesivas en
+  la misma sesión de GUI ya no acumulan inconsistencias de corridas previas.
+
+### Verificación E2E (junio 2026: `Cierre\zmov` + carpeta `Cedulas`)
+
+- Regresión pura (30 diarios): **0 discrepancias** vs cédulas físicas (17,310
+  pares unidad-día en 4 campos).
+- Carpeta mixta (30 diarios + 28 "Completa"): **0 discrepancias** vs físico —
+  C135/C137 el 07/06 = OFICCE MAX (el diario ganó), 23,220 viajes (sin
+  duplicación) y mismos comodatos como conjunto (unidad, fecha).
+- Solo variantes: reproduce el incidente (2 ZORRO) pero ahora señalizado (WARN en
+  log + diálogo + hoja "Fuente Cedulas").
+- Suite: 163 tests unit (18 nuevos: fusión, unicidad, linaje, clasificación del
+  parser). Nuevo `scripts/compare_kpi_reports.py` para comparar reportes.
+- Nota: la numeración de viajes sintéticos de comodato (2000000xxx) depende del
+  orden de iteración — comparar comodatos entre reportes por (unidad, fecha), no
+  por número.
+
 ## 0.6.3 — 2026-07-02 (Fix: cédulas "Cedula completa DDMMYYYY.xlsx" ignoradas + robustez CLI/versión)
 
 Al correr el KPI del corte del 1° de julio (fuente `sheets`), `parse_cedula_filename`

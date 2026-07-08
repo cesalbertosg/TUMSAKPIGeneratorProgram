@@ -107,6 +107,11 @@ class Config:
     # registrar paletas nuevas. Si el nombre no existe, cae a "dark".
     GUI_THEME = os.getenv("KPI_GUI_THEME", "dark").lower()
 
+    # Estado persistente de la GUI (v0.6.4): última fuente de cédulas
+    # seleccionada. Vive en APPDATA (fuera del árbol del repo/instalador)
+    # para que el dropdown no arranque en el default del .env cada sesión.
+    GUI_STATE_PATH = Path(os.getenv("APPDATA", str(Path.home()))) / "KPI Generator" / "gui_state.json"
+
     # --- Capacidades del runtime ---
     # True si la dependencia opcional `psycopg2` esta instalada y la fuente "db"
     # es posible. False para distribuciones standalone (ej. installer Yaneth)

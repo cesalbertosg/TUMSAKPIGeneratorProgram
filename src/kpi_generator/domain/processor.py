@@ -27,6 +27,7 @@ from kpi_generator.domain.period import PeriodContext
 from kpi_generator.io import excel as excel_io
 from kpi_generator.io import sheets as sheets_io
 from kpi_generator.io.date_range import DateRangeError, derive_date_range
+from kpi_generator.lineage import CedulaLineage
 
 # --- Columnas Tier 1 deadweight de la hoja Viajes ---
 # llaveremolque y EqAsignados son intermediarios solo usados internamente para
@@ -44,6 +45,7 @@ SHEET_NAMES = {
     'promedio': 'Promedio KM por Unidad', # antes: 'PromedioKMunitOps'
     'audit': 'Cedulas Rellenadas',
     'inconsistencias': 'Inconsistencias',
+    'fuente': 'Fuente Cedulas',
 }
 
 # Nombres de tabs en Google Sheets — mantenemos consistencia con Excel desde v0.4.0.
@@ -73,6 +75,9 @@ class DataProcessor:
         self._inconsistencias: List[dict] = []
         self.comodato_manager = ComodatoManager()
         self.change_tracker = ChangeTracker(log_callback)
+        # Trazabilidad de la última carga de cédulas (v0.6.4) — la leen GUI y
+        # CLI después del run para mostrar el resumen de fuente efectiva.
+        self.last_lineage: Optional[CedulaLineage] = None
 
     def log(self, message: str, level: LogLevel = LogLevel.INFO, code: str = None):
         """Sistema de logging simplificado con códigos."""
@@ -96,9 +101,10 @@ class DataProcessor:
             'Motivo': motivo,
         })
     
-    def load_daily_cedulas(self, cedulas_folder: str) -> Optional[pd.DataFrame]:
+    def load_daily_cedulas(self, cedulas_folder: str,
+                           lineage: Optional[CedulaLineage] = None) -> Optional[pd.DataFrame]:
         """Delegado a `io.excel.load_daily_cedulas` (refactor v0.4.3)."""
-        return excel_io.load_daily_cedulas(cedulas_folder, self.log)
+        return excel_io.load_daily_cedulas(cedulas_folder, self.log, lineage=lineage)
 
     def _fill_missing_dates(self, df_cedulas: pd.DataFrame) -> pd.DataFrame:
         """Delegado a `io.excel.fill_missing_dates` (refactor v0.4.3).
@@ -139,14 +145,34 @@ class DataProcessor:
                 self.log(f"{key}: {len(df)} registros", LogLevel.DEBUG, "OK")
 
             source = (cedulas_source or Config.CEDULAS_SOURCE).lower()
+            lineage = CedulaLineage(fuente_solicitada=source)
+            self.last_lineage = lineage
             df_cedulas, df_cedulas_audit = self._load_cedulas_by_source(
-                source, trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+                source, trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab, lineage
             )
             if df_cedulas is None:
                 return None
             df_cedulas = self._apply_cedula_fallbacks(df_cedulas, data['trips'])
             data['cedulas'] = df_cedulas
             data['cedulas_audit'] = df_cedulas_audit  # vacío si source != "db"
+            data['cedula_lineage'] = lineage
+
+            # Trazabilidad v0.6.4: los fills de fusión diario+variante y los
+            # dedups intra-archivo van a la hoja "Inconsistencias"; el resumen
+            # del linaje, al log [SRC].
+            for unidad, fecha, campo in lineage.fusion_fills:
+                self._registrar_inconsistencia(
+                    unidad, fecha, campo,
+                    valor_aplicado='(desde variante del mismo día)',
+                    motivo='Completado por fusión con variante Completa (mismo día)',
+                )
+            for unidad, fecha, archivo in lineage.dedup_intra:
+                self._registrar_inconsistencia(
+                    unidad, fecha, 'Unidades',
+                    valor_aplicado='(fila descartada)',
+                    motivo=f'Unidad duplicada dentro de {archivo}; se conservó la primera',
+                )
+            self.log(lineage.resumen_linea(), code="SRC")
 
             if objectives_file and Path(objectives_file).exists():
                 df_obj = pd.read_excel(objectives_file)
@@ -176,15 +202,21 @@ class DataProcessor:
             return None
 
     def _load_cedulas_by_source(self, source: str, trips_file: str, cedulas_folder: str,
-                                cedulas_sheet_id: str | None, cedulas_tab: str | None
+                                cedulas_sheet_id: str | None, cedulas_tab: str | None,
+                                lineage: Optional[CedulaLineage] = None,
                                 ) -> tuple[Optional[pd.DataFrame], pd.DataFrame]:
         """Despacha la carga de cédulas a la fuente apropiada.
 
         Devuelve (df_cedulas, df_audit). df_audit está vacío salvo cuando source='db'.
         Si source='db' falla y FALLBACK_ON_DB_ERROR=true, intenta el path Excel.
+        `lineage` (v0.6.4) acumula fuente efectiva, archivos y fallbacks; la
+        recursión del fallback escribe sobre el mismo objeto.
         """
         if source == "sheets":
             self.log("Fuente cédulas: Google Sheets", code="SRC")
+            if lineage is not None:
+                lineage.fuente_efectiva = 'sheets'
+                lineage.carpeta = cedulas_folder or None
             sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
 
             # Paso 1: rango de fechas desde zmov — antes de cualquier consulta externa
@@ -200,6 +232,7 @@ class DataProcessor:
             df = sheets_io.load_cedulas_for_period(
                 sheet_id, self.log, fecha_min, fecha_max,
                 tab_name=cedulas_tab, cedulas_folder=cedulas_folder,
+                lineage=lineage,
             )
             if df is None:
                 return None, pd.DataFrame()
@@ -226,6 +259,8 @@ class DataProcessor:
 
         if source == "db":
             self.log("Fuente cédulas: PostgreSQL", code="SRC")
+            if lineage is not None:
+                lineage.fuente_efectiva = 'db'
             if not Config.db_available():
                 self.log(
                     "Falta dependencia 'psycopg2-binary'. Reinstala con: "
@@ -243,21 +278,41 @@ class DataProcessor:
                 if df.empty:
                     self.log("BD devolvió 0 cédulas para el rango", LogLevel.ERROR, "ERR")
                     return None, pd.DataFrame()
+                if lineage is not None and not df_audit.empty and 'Origen' in df_audit.columns:
+                    # Aproximación por fecha (el detalle unidad-fecha vive en la
+                    # hoja "Cedulas Rellenadas"): una fecha cuenta como ffill si
+                    # alguna unidad se rellenó ese día.
+                    try:
+                        col_fecha = next((c for c in ('Fecha', 'Fecha Cedula', 'fecha')
+                                          if c in df_audit.columns), None)
+                        if col_fecha is not None:
+                            ffill_fechas = df_audit.loc[
+                                df_audit['Origen'] == 'forward_fill', col_fecha]
+                            lineage.fechas_ffill = sorted(
+                                pd.to_datetime(ffill_fechas.unique()))
+                    except Exception:
+                        pass
                 return df, df_audit
             except PostgresConnectionError as e:
                 if Config.FALLBACK_ON_DB_ERROR:
                     # Cadena: db → sheets → excel
                     self.log(f"BD inaccesible ({e}); fallback: sheets → excel",
                              LogLevel.ERROR, "WARN")
+                    if lineage is not None:
+                        lineage.fallbacks.append(f"db→sheets: BD inaccesible ({e})")
                     df_fb, audit_fb = self._load_cedulas_by_source(
-                        'sheets', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+                        'sheets', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab,
+                        lineage
                     )
                     if df_fb is not None and not df_fb.empty:
                         return df_fb, audit_fb
                     self.log("Fallback Sheets falló; intentando Excel local",
                              LogLevel.ERROR, "WARN")
+                    if lineage is not None:
+                        lineage.fallbacks.append("sheets→excel: fallback Sheets falló")
                     return self._load_cedulas_by_source(
-                        'excel', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab
+                        'excel', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab,
+                        lineage
                     )
                 self.log(f"BD inaccesible y sin fallback: {e}", LogLevel.ERROR, "ERR")
                 return None, pd.DataFrame()
@@ -267,7 +322,10 @@ class DataProcessor:
 
         # source == "excel" (default)
         self.log("Fuente cédulas: Excel local", code="SRC")
-        df = self.load_daily_cedulas(cedulas_folder)
+        if lineage is not None:
+            lineage.fuente_efectiva = 'excel'
+            lineage.carpeta = cedulas_folder or None
+        df = self.load_daily_cedulas(cedulas_folder, lineage=lineage)
         return df, pd.DataFrame()
 
     def _apply_cedula_fallbacks(self, df_cedulas: pd.DataFrame, df_trips: pd.DataFrame) -> pd.DataFrame:
@@ -1016,6 +1074,7 @@ class DataProcessor:
                      df_opcedula: pd.DataFrame, output_path: str, df_objectives: pd.DataFrame = None,
                      df_promedio: pd.DataFrame = None, df_cedulas_audit: pd.DataFrame = None,
                      df_inconsistencias: pd.DataFrame = None,
+                     df_fuente_cedulas: pd.DataFrame = None,
                      upload_sheets: bool = True) -> Optional[str]:
         """Genera el Excel KPI y opcionalmente sincroniza a Google Sheets (v0.4.3).
 
@@ -1025,7 +1084,10 @@ class DataProcessor:
 
         Orden de hojas: Resumen → Por Equipo → Viajes → Resumen de Cambios →
         Por Operación → Objetivos → Promedio KM por Unidad → Cedulas Rellenadas →
-        Inconsistencias.
+        Inconsistencias → Fuente Cedulas.
+
+        "Fuente Cedulas" (v0.6.4) es la trazabilidad de la carga de cédulas;
+        como "Cedulas Rellenadas", NO se sube a Google Sheets (solo Excel local).
         """
         # Drops de deadweight (Tier 1) sin tocar la logica de calculo
         df_processed = self._drop_deadweight(df_processed, TRIP_DEADWEIGHT_COLS)
@@ -1060,6 +1122,11 @@ class DataProcessor:
         if df_inconsistencias is not None and not df_inconsistencias.empty:
             self.log(f"Hoja {SHEET_NAMES['inconsistencias']}: {len(df_inconsistencias)} "
                      f"ajustes registrados", code="INCONS")
+        if df_fuente_cedulas is not None and not df_fuente_cedulas.empty:
+            n_archivos = (df_fuente_cedulas['Categoría'] == 'ARCHIVO').sum() \
+                if 'Categoría' in df_fuente_cedulas.columns else len(df_fuente_cedulas)
+            self.log(f"Hoja {SHEET_NAMES['fuente']}: trazabilidad de "
+                     f"{n_archivos} archivos de cédula", code="SRC")
 
         # Orquestar escritura: dict ordenado -> io.excel
         workbook_sheets = {
@@ -1072,6 +1139,7 @@ class DataProcessor:
             SHEET_NAMES['promedio']: df_promedio,
             SHEET_NAMES['audit']: df_cedulas_audit,
             SHEET_NAMES['inconsistencias']: df_inconsistencias,
+            SHEET_NAMES['fuente']: df_fuente_cedulas,
         }
         full_path = excel_io.write_workbook(workbook_sheets, output_path, self.log)
         if full_path is None:
@@ -1118,6 +1186,10 @@ class DataProcessor:
         """
         try:
             self.log("=== INICIO PROCESO KPI ===", code="START")
+
+            # Cada corrida arranca limpia: sin esto, corridas sucesivas en la
+            # misma sesión GUI acumulaban inconsistencias de meses anteriores.
+            self._inconsistencias = []
 
             data = self.load_data(trips_file, fuel_file, cedulas_folder, objectives_file,
                                   cedulas_source=cedulas_source)
@@ -1187,12 +1259,17 @@ class DataProcessor:
                 columns=['Unidad', 'Fecha', 'Campo', 'Valor Original', 'Valor Aplicado', 'Motivo'],
             )
 
+            df_fuente_cedulas = (
+                self.last_lineage.to_dataframe() if self.last_lineage is not None else None
+            )
+
             result_path = self.save_results(
                 df_kpi, df_processed, df_changes, df_opcedula, output_path,
                 df_objectives=data['objectives'],
                 df_promedio=df_promedio,
                 df_cedulas_audit=data.get('cedulas_audit'),
                 df_inconsistencias=df_inconsistencias,
+                df_fuente_cedulas=df_fuente_cedulas,
                 upload_sheets=upload_sheets,
             )
 
