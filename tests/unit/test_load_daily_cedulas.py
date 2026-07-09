@@ -14,6 +14,7 @@ hoja de inconsistencias":
 
 from __future__ import annotations
 
+from datetime import date as date_cls
 from datetime import datetime
 
 import pandas as pd
@@ -271,6 +272,25 @@ def test_duplicado_intra_archivo_keep_first(tmp_path) -> None:
     assert any('repetidas' in m for m in logs)
 
 
+def test_carpeta_combinada_fechas_distintas_no_es_mixta(tmp_path) -> None:
+    """Diario del día 1 + variante del día 2 (estado normal tras el
+    auto-completado Drive v0.6.5): NO debe marcar carpeta_mixta ni advertir."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 02062026 Completa.xlsx", engine='openpyxl', index=False)
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(str(tmp_path), _NOLOG, lineage=lineage)
+
+    assert result is not None
+    assert len(result) == 2
+    assert lineage.carpeta_mixta is False
+    assert not lineage.advertencias
+
+
 def test_carpeta_solo_variantes_advierte(tmp_path) -> None:
     """La trampa del incidente de junio: carpeta con puras 'Completa' debe
     cargar (base = variante) pero con advertencia visible."""
@@ -328,6 +348,116 @@ def test_regresion_solo_diarios_sin_kwarg(tmp_path) -> None:
     assert len(result) == 2
     assert list(result['Fecha Cedula']) == ['01/06/2026', '02/06/2026']
     assert not result.duplicated(subset=['Unidades', 'Fecha Cedula_dt']).any()
+
+
+# ---------- v0.6.5: gap-filler Drive (fetcher inyectado, sin red) ----------
+
+def _drive_frame(dia: date_cls, unidad: str = 'C135', operacion: str = 'DRIVE-OP') -> pd.DataFrame:
+    return pd.DataFrame([{
+        'Unidades': unidad, 'Gerencia': 'Sandra Luna', 'Operación': operacion,
+        'Tipo de Unidad': 'TORTHON', 'Circuito': 'DEDICADO', 'Operando': 'Operando',
+        'Fecha Cedula': dia.strftime('%d/%m/%Y'), 'Fecha Cedula_dt': pd.Timestamp(dia),
+    }])
+
+
+def test_gap_fetcher_rellena_solo_fechas_faltantes(tmp_path) -> None:
+    """Físicos días 1 y 3, rango de viajes 1-4: el fetcher recibe SOLO [2, 4],
+    sus días se integran y no queda nada a forward-fill."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 03062026.xlsx", engine='openpyxl', index=False)
+
+    pedidas: list = []
+
+    def fetcher(faltantes):
+        pedidas.extend(faltantes)
+        return {d: _drive_frame(d) for d in faltantes}
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 4),
+        gap_fetcher=fetcher,
+    )
+
+    assert result is not None
+    assert pedidas == [date_cls(2026, 6, 2), date_cls(2026, 6, 4)]
+    dia2 = result[result['Fecha Cedula_dt'] == pd.Timestamp('2026-06-02')]
+    assert len(dia2) == 1 and dia2.iloc[0]['Operación'] == 'DRIVE-OP'
+    assert lineage.fechas_drive == [date_cls(2026, 6, 2), date_cls(2026, 6, 4)]
+    assert lineage.fechas_ffill == []
+    assert not result.duplicated(subset=['Unidades', 'Fecha Cedula_dt']).any()
+
+
+def test_gap_fetcher_jamas_pisa_fisico(tmp_path) -> None:
+    """Aunque el fetcher devuelva fechas NO solicitadas (incluida una con
+    archivo físico), solo se integran las faltantes: lo físico es intocable."""
+    pd.DataFrame([_fila_diario(**{'Operación': 'FISICO-OP'})]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+
+    def fetcher(faltantes):
+        respuesta = {d: _drive_frame(d) for d in faltantes}
+        respuesta[date_cls(2026, 6, 1)] = _drive_frame(date_cls(2026, 6, 1))  # intruso
+        return respuesta
+
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 2),
+        gap_fetcher=fetcher,
+    )
+
+    assert result is not None
+    dia1 = result[result['Fecha Cedula_dt'] == pd.Timestamp('2026-06-01')]
+    assert len(dia1) == 1 and dia1.iloc[0]['Operación'] == 'FISICO-OP'
+
+
+def test_gap_fetcher_falla_degrada_a_ffill(tmp_path) -> None:
+    """Fetcher que lanza (offline) → mismas fechas quedan al forward-fill de
+    siempre, con advertencia en el linaje; la corrida NO aborta."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario(Operando='Operando')]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario(Operando='Taller')]).to_excel(
+        tmp_path / "Cedula 03062026.xlsx", engine='openpyxl', index=False)
+
+    def fetcher(_faltantes):
+        raise RuntimeError("offline")
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 3),
+        gap_fetcher=fetcher,
+    )
+
+    assert result is not None
+    dia2 = result[result['Fecha Cedula_dt'] == pd.Timestamp('2026-06-02')]
+    assert len(dia2) == 1 and dia2.iloc[0]['Operando'] == 'Operando'  # ffill del día 1
+    assert lineage.fechas_ffill == [pd.Timestamp('2026-06-02')]
+    assert any('Relleno Drive falló' in adv for adv in lineage.advertencias)
+
+
+def test_gap_fetcher_vacio_o_parcial(tmp_path) -> None:
+    """Fetcher que devuelve {} (sin revisiones útiles) → comportamiento actual
+    intacto (ffill interior); sin gap_fetcher tampoco cambia nada."""
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 03062026.xlsx", engine='openpyxl', index=False)
+
+    con_fetcher = load_daily_cedulas(
+        str(tmp_path), _NOLOG,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 3),
+        gap_fetcher=lambda _f: {},
+    )
+    sin_fetcher = load_daily_cedulas(str(tmp_path), _NOLOG)
+
+    assert con_fetcher is not None and sin_fetcher is not None
+    assert len(con_fetcher) == len(sin_fetcher) == 3  # días 1, 2(ffill), 3
 
 
 def test_crossfill_local_duplicado_no_multiplica_filas() -> None:

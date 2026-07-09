@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.6.5 — 2026-07-09 (Gap-filler Drive en modo excel: auto-completar cédulas faltantes)
+
+El modo `excel` ahora es un automatizador completo: si a la carpeta de cédulas
+le faltan días del rango de viajes, los descarga del historial de revisiones
+del Google Sheet y los guarda como `Cedula DDMMYYYY Completa.xlsx` — **sin
+tocar jamás lo físico existente** (editado a mano a demanda de gerentes). En
+la siguiente corrida esos archivos ya son físicos; si después se crea un
+diario a mano para esa fecha, la fusión v0.6.4 le da la autoridad al diario.
+Implementa el plan diferido `docs/plan-relleno-drive-modo-excel.md` con las
+decisiones de Beto del 09/07/2026.
+
+### Gap-filler (io/sheets.py + io/excel.py + processor)
+
+- Nuevo `fetch_dates_from_revisions(sheet_id, log, dates, tab_name,
+  save_folder, approximate_older, lineage)`: fuente única de la lógica Drive.
+  `load_cedulas_for_period` (fuente sheets) se refactorizó para usarlo sin
+  cambio de semántica; el modo excel lo consume vía callback armado en el
+  processor (`io/excel.py` no importa red).
+- `load_daily_cedulas(..., fecha_min, fecha_max, gap_fetcher)`: tras consolidar
+  físicos pide al fetcher SOLO las fechas del rango de viajes sin archivo
+  (filtro defensivo: aunque el fetcher devolviera de más, lo físico es
+  intocable por construcción). Lo que Drive no cubra queda al forward-fill de
+  siempre. Best-effort total: sin internet/credenciales degrada con
+  advertencia visible (log + hoja Fuente Cedulas + GUI), nunca aborta.
+- `approximate_older=False` en modo excel: un día anterior a toda revisión NO
+  se aproxima con la revisión más vieja ni genera archivo (un archivo
+  aproximado se volvería autoritativo en la siguiente corrida). La fuente
+  sheets conserva su aproximación histórica.
+- Cédulas "reducidas" (6 columnas, sin operadores) y "completas" (10 columnas)
+  conviven e integran; la carpeta diarios+variantes en fechas DISTINTAS ahora
+  es "carpeta combinada" (INFO, estado normal post-auto-completado) — el WARN
+  de carpeta mixta se reserva para traslape en la misma fecha.
+
+### Fix colateral (bug latente de v0.5.4/v0.6.2)
+
+- `_extract_cedula_vertical_for_date` devolvía **0 registros** para los XLSX
+  exportados del historial (`?revision=`): sus encabezados de fecha son celdas
+  datetime que pandas rinde `"2026-07-06 00:00:00"`, y el extractor solo
+  aceptaba `DD/MM/YYYY` (formato del sheet vivo). Nuevo `_parse_header_date`
+  tolera ambos — las revisiones intermedias volvieron a ser utilizables
+  (también beneficia a la fuente `sheets`).
+
+### Hallazgo operativo documentado
+
+- Google purga/consolida el historial del Sheet de cédulas en ~una semana
+  (el 09/07 la revisión más antigua era del 03/07; las de junio ya no
+  existen). El gap-filler sirve para huecos RECIENTES (el mes en curso);
+  para meses viejos el guardado manual diario sigue siendo la única fuente.
+
+### Verificación E2E (julio 2026 real, con red)
+
+- Carpeta con diarios 01-05/07 y rango de viajes 01-08/07: descargó y guardó
+  06, 07 y 08 (`[COV] 3 de 3`), contenido **idéntico** a las referencias de
+  `Cedulas Completas\` (576 unidades, 0 diffs en Gerencia/Operación/Circuito).
+- Segunda pasada idempotente: 0 consultas Drive, 0 ffill, sin advertencias.
+- Sin revisiones disponibles (junio): degrada a forward-fill con advertencia,
+  sin fabricar archivos.
+- Suite: 171 tests unit (8 nuevos).
+
 ## 0.6.4 — 2026-07-08 (Trazabilidad de cédulas + fusión complementaria: "el físico manda al 100%")
 
 Diagnóstico con el cierre de junio: un reporte generado creyendo estar en modo

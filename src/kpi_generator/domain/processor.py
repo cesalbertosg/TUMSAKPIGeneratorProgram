@@ -102,9 +102,13 @@ class DataProcessor:
         })
     
     def load_daily_cedulas(self, cedulas_folder: str,
-                           lineage: Optional[CedulaLineage] = None) -> Optional[pd.DataFrame]:
+                           lineage: Optional[CedulaLineage] = None,
+                           fecha_min=None, fecha_max=None,
+                           gap_fetcher=None) -> Optional[pd.DataFrame]:
         """Delegado a `io.excel.load_daily_cedulas` (refactor v0.4.3)."""
-        return excel_io.load_daily_cedulas(cedulas_folder, self.log, lineage=lineage)
+        return excel_io.load_daily_cedulas(cedulas_folder, self.log, lineage=lineage,
+                                           fecha_min=fecha_min, fecha_max=fecha_max,
+                                           gap_fetcher=gap_fetcher)
 
     def _fill_missing_dates(self, df_cedulas: pd.DataFrame) -> pd.DataFrame:
         """Delegado a `io.excel.fill_missing_dates` (refactor v0.4.3).
@@ -325,7 +329,35 @@ class DataProcessor:
         if lineage is not None:
             lineage.fuente_efectiva = 'excel'
             lineage.carpeta = cedulas_folder or None
-        df = self.load_daily_cedulas(cedulas_folder, lineage=lineage)
+
+        # v0.6.5: rango de viajes para el gap-filler Drive (best-effort — sin
+        # rango o sin sheet_id, el modo excel se comporta como siempre).
+        fecha_min = fecha_max = None
+        try:
+            fecha_min, fecha_max = derive_date_range(trips_file)
+            self.log(f"Rango de viajes: {fecha_min} a {fecha_max}", code="RNG")
+        except DateRangeError as e:
+            self.log(f"Sin rango de viajes ({e}); no se completan faltantes desde Drive",
+                     LogLevel.ERROR, "WARN")
+
+        gap_fetcher = None
+        sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
+        if fecha_min is not None and sheet_id:
+            def gap_fetcher(faltantes, _sid=sheet_id):
+                # approximate_older=False: un día anterior a toda revisión NO se
+                # aproxima ni se guarda — queda al forward-fill (decisión Beto
+                # 09/07/2026: un archivo aproximado se volvería autoritativo).
+                return sheets_io.fetch_dates_from_revisions(
+                    _sid, self.log, faltantes,
+                    tab_name=cedulas_tab,
+                    save_folder=cedulas_folder,
+                    approximate_older=False,
+                    lineage=lineage,
+                )
+
+        df = self.load_daily_cedulas(cedulas_folder, lineage=lineage,
+                                     fecha_min=fecha_min, fecha_max=fecha_max,
+                                     gap_fetcher=gap_fetcher)
         return df, pd.DataFrame()
 
     def _apply_cedula_fallbacks(self, df_cedulas: pd.DataFrame, df_trips: pd.DataFrame) -> pd.DataFrame:

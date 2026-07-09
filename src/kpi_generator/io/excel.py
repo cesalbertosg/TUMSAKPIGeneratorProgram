@@ -18,7 +18,7 @@ Publico:
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, NamedTuple, Optional
@@ -213,7 +213,9 @@ def _fusionar_cedulas_mismo_dia(
 
 
 def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
-                       lineage: Optional[CedulaLineage] = None) -> Optional[pd.DataFrame]:
+                       lineage: Optional[CedulaLineage] = None,
+                       fecha_min=None, fecha_max=None,
+                       gap_fetcher: Optional[Callable] = None) -> Optional[pd.DataFrame]:
     """Cargar y consolidar cedulas diarias desde una carpeta de .xlsx.
 
     Cada archivo `Cedula DDMMYYYY.xlsx` aporta una fecha. Las fechas ausentes
@@ -228,6 +230,14 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
     - Invariante post-consolidacion: (Unidades, Fecha Cedula_dt) unico;
       si se viola → falla dura (None).
     - `lineage` (opcional) acumula trazabilidad para la hoja "Fuente Cedulas".
+
+    Gap-filler Drive (v0.6.5, keyword-only, default = comportamiento previo):
+    - Con `gap_fetcher` + `fecha_min`/`fecha_max` (datetime.date, tipicamente
+      el rango de viajes del zmov): las fechas del rango SIN archivo fisico se
+      piden al fetcher (callback `list[date] -> dict[date, DataFrame]`, armado
+      en el processor con `io.sheets.fetch_dates_from_revisions` — este modulo
+      no importa red). Lo fisico jamas se toca ni se re-descarga. Best-effort:
+      si el fetcher falla, esas fechas quedan al forward-fill como siempre.
 
     Devuelve `None` ante cualquier error (carpeta invalida, archivos con
     formato no reconocido, columnas faltantes, etc.) — el caller debe
@@ -261,12 +271,21 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
         # correr modo excel sobre una carpeta de descargas de Drive).
         n_diarios = sum(1 for _f, p in valid_files if p.variante == 'diario')
         n_variantes = len(valid_files) - n_diarios
-        if n_diarios and n_variantes:
-            log(f"Carpeta mixta: {n_diarios} diarios + {n_variantes} variantes — "
-                "el diario manda; la variante solo rellena vacíos",
+        fechas_diario = {p.fecha for _f, p in valid_files if p.variante == 'diario'}
+        fechas_variante = {p.fecha for _f, p in valid_files if p.variante == 'variante'}
+        traslape = fechas_diario & fechas_variante
+        if traslape:
+            log(f"Carpeta mixta: {len(traslape)} fecha(s) con diario Y variante de "
+                "la misma fecha — el diario manda; la variante solo rellena vacíos",
                 LogLevel.ERROR, "WARN")
             if lineage is not None:
                 lineage.carpeta_mixta = True
+        elif n_diarios and n_variantes:
+            # Diarios y variantes en fechas DISTINTAS: estado normal de una
+            # carpeta auto-completada por el gap-filler Drive (v0.6.5) — no
+            # es sospechoso, no dispara advertencia.
+            log(f"Carpeta combinada: {n_diarios} diarios + {n_variantes} variantes "
+                "en fechas distintas", code="INFO")
         elif n_variantes and not n_diarios:
             msg = (f"La carpeta contiene SOLO variantes 'Completa' ({n_variantes} archivos) "
                    "— verifica que sea la carpeta de cédulas físicas diarias")
@@ -334,6 +353,47 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                 lineage.archivos.extend(a for a, _df in entradas)
 
         df_cedulas = pd.concat(consolidated_cedulas, ignore_index=True)
+        fechas_fisicas = sorted(por_fecha)
+
+        # Gap-filler Drive (v0.6.5): completar fechas del rango de viajes que
+        # no tienen archivo fisico. Solo fechas faltantes — lo fisico manda.
+        fechas_drive: list = []
+        if gap_fetcher is not None and fecha_min is not None and fecha_max is not None:
+            fisicas_dates = {f.date() if hasattr(f, 'date') else f for f in fechas_fisicas}
+            n_dias = (fecha_max - fecha_min).days + 1
+            faltantes = [fecha_min + timedelta(days=i) for i in range(n_dias)]
+            faltantes = [d for d in faltantes if d not in fisicas_dates]
+            if faltantes:
+                log(f"Fechas del rango de viajes sin archivo físico: {len(faltantes)} "
+                    "→ consultando historial Drive", code="REV")
+                try:
+                    descargadas = gap_fetcher(faltantes) or {}
+                except Exception as e:
+                    log(f"Relleno Drive falló ({e}); las fechas faltantes quedan a "
+                        "forward-fill", LogLevel.ERROR, "WARN")
+                    if lineage is not None:
+                        lineage.advertencias.append(f"Relleno Drive falló: {e}")
+                    descargadas = {}
+
+                # Solo fechas realmente solicitadas: lo fisico es intocable
+                # por construccion, aunque el fetcher devolviera de mas.
+                faltantes_set = set(faltantes)
+                descargadas = {d: v for d, v in descargadas.items() if d in faltantes_set}
+
+                for d in sorted(descargadas):
+                    df_d = descargadas[d]
+                    if df_d is None or df_d.empty:
+                        continue
+                    if not all(c in df_d.columns for c in required_cols):
+                        log(f"Día Drive {d}: columnas incompletas, se omite "
+                            "(queda a forward-fill)", LogLevel.ERROR, "WARN")
+                        continue
+                    df_d = df_d.drop_duplicates(subset=['Unidades'], keep='first')
+                    df_cedulas = pd.concat([df_cedulas, df_d], ignore_index=True)
+                    fechas_drive.append(d)
+
+                log(f"Historial Drive aportó {len(fechas_drive)} de {len(faltantes)} "
+                    "fechas faltantes; el resto queda a forward-fill", code="COV")
 
         # Invariante v0.6.4: (Unidades, Fecha) unico tras consolidar — un
         # duplicado aqui multiplica viajes en el merge aguas abajo, asi que
@@ -347,15 +407,20 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                 "abortando para no duplicar viajes", LogLevel.ERROR, "ERR")
             return None
 
-        fechas_fisicas = sorted(por_fecha)
         df_cedulas = fill_missing_dates(df_cedulas)
 
         if lineage is not None:
             lineage.fechas_fisicas = list(fechas_fisicas)
-            fisicas_ts = {pd.Timestamp(f) for f in fechas_fisicas}
+            # Registro idempotente: fetch_dates_from_revisions ya registra las
+            # fechas Drive cuando recibe lineage; esto cubre fetchers que no.
+            for d in fechas_drive:
+                if d not in lineage.fechas_drive:
+                    lineage.fechas_drive.append(d)
+            cubiertas_ts = {pd.Timestamp(f) for f in fechas_fisicas}
+            cubiertas_ts |= {pd.Timestamp(d) for d in fechas_drive}
             lineage.fechas_ffill = sorted(
                 pd.Timestamp(d) for d in pd.to_datetime(df_cedulas['Fecha Cedula_dt']).unique()
-                if pd.Timestamp(d) not in fisicas_ts
+                if pd.Timestamp(d) not in cubiertas_ts
             )
 
         log(f"Cédulas: {len(df_cedulas)} registros", code="OK")

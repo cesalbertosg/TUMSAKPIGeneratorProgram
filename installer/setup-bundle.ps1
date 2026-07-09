@@ -18,7 +18,7 @@
 [CmdletBinding()]
 param(
     [string]$PythonVersion = "3.14.4",
-    [string]$RepoTag = "v0.6.4",
+    [string]$RepoTag = "v0.6.5",
     [switch]$Force  # Re-descargar incluso si ya existe
 )
 

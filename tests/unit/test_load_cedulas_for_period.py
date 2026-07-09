@@ -77,3 +77,66 @@ def test_sin_drive_y_sin_carpeta_devuelve_none(tmp_path) -> None:
         )
 
     assert df is None
+
+
+# ---------- v0.6.5: fetch_dates_from_revisions (helper compartido) ----------
+
+def test_fetch_dates_offline_devuelve_vacio_con_advertencia() -> None:
+    """Best-effort: sin red devuelve {} sin lanzar y deja advertencia en el
+    linaje — el modo excel degrada a forward-fill con este contrato."""
+    from kpi_generator.io.sheets import fetch_dates_from_revisions
+    from kpi_generator.lineage import CedulaLineage
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    with patch('kpi_generator.io.sheets.gspread.authorize', side_effect=RuntimeError("offline")):
+        result = fetch_dates_from_revisions(
+            'fake-id', _NOLOG, [date(2026, 6, 2)], lineage=lineage,
+        )
+
+    assert result == {}
+    assert any('no disponible' in adv for adv in lineage.advertencias)
+
+
+def test_extract_vertical_acepta_headers_iso_de_revision() -> None:
+    """Bug real (09/07/2026): los XLSX exportados del historial de revisiones
+    traen los encabezados de fecha como datetime → pandas los rinde
+    '2026-07-06 00:00:00' y el extractor (que solo aceptaba DD/MM/YYYY del
+    sheet vivo) devolvía 0 registros — las revisiones intermedias se perdían."""
+    from kpi_generator.io.sheets import _extract_cedula_vertical_for_date
+
+    rows = [
+        ['CEDULA DE UNIDADES', '', '', '', '', '', ''],
+        ['Unidad', 'Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito',
+         '2026-07-06 00:00:00', '2026-07-07 00:00:00'],
+        ['C135', 'Sandra Luna', 'OFICCE MAX', 'TORTHON', 'DEDICADO', 'Operando', 'Taller'],
+    ]
+
+    recs6 = _extract_cedula_vertical_for_date(rows, date(2026, 7, 6))
+    assert len(recs6) == 1
+    assert recs6[0]['Unidades'] == 'C135'
+    assert recs6[0]['Operando'] == 'Operando'
+
+    recs7 = _extract_cedula_vertical_for_date(rows, date(2026, 7, 7))
+    assert recs7[0]['Operando'] == 'Taller'
+    # Los headers ISO no deben colarse como columnas meta
+    assert not any('00:00:00' in k for k in recs6[0])
+
+    # El formato del sheet vivo (DD/MM/YYYY) sigue funcionando igual
+    rows_vivo = [
+        ['Unidad', 'Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito', '06/07/2026'],
+        ['C135', 'G', 'OP', 'T', 'C', 'Operando'],
+    ]
+    assert len(_extract_cedula_vertical_for_date(rows_vivo, date(2026, 7, 6))) == 1
+
+
+def test_fetch_dates_lista_vacia_no_conecta() -> None:
+    """Con 0 fechas solicitadas ni siquiera intenta conectar (carpeta completa
+    → modo excel 100% offline como siempre)."""
+    from kpi_generator.io.sheets import fetch_dates_from_revisions
+
+    with patch('kpi_generator.io.sheets.gspread.authorize',
+               side_effect=AssertionError("no debió conectar")) as mock_auth:
+        result = fetch_dates_from_revisions('fake-id', _NOLOG, [])
+
+    assert result == {}
+    mock_auth.assert_not_called()

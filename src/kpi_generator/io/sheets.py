@@ -10,6 +10,10 @@ Publico:
   Reemplaza a `load_cedula_from_sheet` en `_load_cedulas_by_source` (fuente "sheets"):
   prioriza archivos fisicos diarios por fecha y solo recurre a Drive API para los
   huecos, evitando que el valor VIGENTE del sheet se aplique a fechas pasadas.
+- `fetch_dates_from_revisions(sheet_id, log, dates, tab_name, save_folder,
+  approximate_older, lineage)` -> dict[date, DataFrame]
+  Fuente unica de la logica Drive (v0.6.5): la usan load_cedulas_for_period y el
+  gap-filler del modo excel (via callback armado en el processor). Best-effort.
 - `sync_workbook_to_sheets(sheets_id, dfs, log_callback)` -> bool
 
 Nota: todas importan `google-auth` + `gspread`. Para tests unitarios que no
@@ -257,6 +261,26 @@ def _patch_static_from_revisions(df: pd.DataFrame, sheet_id: str,
 # Helpers para load_cedulas_for_period
 # ---------------------------------------------------------------------------
 
+def _parse_header_date(value: str) -> date | None:
+    """Fecha de un encabezado de columna de cédula, tolerante al origen.
+
+    - `DD/MM/YYYY`: formato del sheet vivo (gspread `get_all_values`).
+    - `YYYY-MM-DD[ 00:00:00]`: celdas datetime del XLSX exportado por el
+      endpoint de revisiones, renderizadas por pandas con `dtype=str`.
+      (Bug real 09/07/2026: las revisiones intermedias extraían 0 registros
+      porque solo se aceptaba DD/MM/YYYY.)
+    """
+    s = str(value).strip()
+    if s.endswith(' 00:00:00'):
+        s = s[:-9].strip()
+    for fmt in ('%d/%m/%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def _extract_cedula_vertical_for_date(
     all_rows: list[list[str]],
     target_date: date,
@@ -267,7 +291,6 @@ def _extract_cedula_vertical_for_date(
     Devuelve lista de dicts {Unidades, Gerencia, Operación, …, Operando,
     Fecha Cedula} o lista vacía si falla.
     """
-    date_col_re = re.compile(r'^\d{2}/\d{2}/\d{4}$')
     unit_id_re = re.compile(r'^[A-Za-z][A-Za-z0-9]+$')
     subtotal_re = re.compile(r'^\d+\s+al\s+\d+|en\s+adelante', re.IGNORECASE)
     skip_col_names = {'Taller', 'Gestoría', 'Sin operador', 'Sin Operador', ''}
@@ -285,13 +308,9 @@ def _extract_cedula_vertical_for_date(
     # Construir lista (col_index, col_date) para todas las columnas de fecha
     date_col_pairs: list[tuple[int, date]] = []
     for i, h in enumerate(header):
-        h_s = h.strip()
-        if date_col_re.match(h_s):
-            try:
-                d = datetime.strptime(h_s, '%d/%m/%Y').date()
-                date_col_pairs.append((i, d))
-            except ValueError:
-                pass
+        d = _parse_header_date(h)
+        if d is not None:
+            date_col_pairs.append((i, d))
 
     if not date_col_pairs:
         return []
@@ -303,7 +322,7 @@ def _extract_cedula_vertical_for_date(
     # Columnas meta (no son fechas, no son subtotales, no son categorías a omitir)
     meta_col_indices = [
         i for i, h in enumerate(header)
-        if not date_col_re.match(h.strip())
+        if _parse_header_date(h) is None
         and not subtotal_re.match(h.strip())
         and h.strip() not in skip_col_names
     ]
@@ -336,6 +355,129 @@ def _finalize_cedulas_df(df: pd.DataFrame) -> pd.DataFrame:
             .transform(lambda s: s.replace('', None).ffill().fillna('Desconocido'))
         )
     return fill_missing_dates(df)
+
+
+def fetch_dates_from_revisions(
+    sheet_id: str,
+    log: LogCallback,
+    dates: list[date],
+    tab_name: Optional[str] = None,
+    save_folder: Optional[str] = None,
+    approximate_older: bool = True,
+    lineage: Optional[CedulaLineage] = None,
+) -> dict[date, pd.DataFrame]:
+    """Descarga snapshots de cédula del historial de revisiones para `dates`.
+
+    Fuente única de la lógica Drive (v0.6.5): la usan `load_cedulas_for_period`
+    (fuente sheets) y el gap-filler del modo excel (vía callback armado en el
+    processor, para que `io/excel.py` no importe red).
+
+    **Best-effort**: sin credenciales / offline / Drive caído devuelve `{}` (o
+    parcial) sin lanzar — el caller decide el fallback (forward-fill).
+
+    - Para cada fecha usa la revisión más reciente <= fin del día.
+    - `approximate_older=True` (semántica histórica de la fuente sheets):
+      fechas anteriores a toda revisión se aproximan con la revisión más
+      antigua. Con `False` (modo excel), esas fechas se omiten y quedan al
+      forward-fill del caller — un archivo aproximado se volvería autoritativo
+      en la siguiente corrida.
+    - Devuelve `dict fecha -> DataFrame` normalizado (Unidades upper,
+      `Fecha Cedula`/`Fecha Cedula_dt`), mismo formato que los frames físicos.
+    - Con `save_folder`, guarda cada día como `Cedula DDMMYYYY Completa.xlsx`
+      **sin sobrescribir** archivos existentes.
+    - Registra en `lineage` las fechas Drive y las advertencias.
+    """
+    result: dict[date, pd.DataFrame] = {}
+    if not dates:
+        return result
+
+    try:
+        creds = Credentials.from_service_account_file(
+            Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
+        )
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(sheet_id)
+        if tab_name is None:
+            tab_name = sh.worksheets()[0].title
+        ws = sh.worksheet(tab_name)
+        live_all_rows = ws.get_all_values()
+        revisions = _list_revisions(sheet_id, creds)
+        log(f"Drive API: {len(revisions)} revisiones disponibles", LogLevel.DEBUG, "REV")
+    except Exception as e:
+        log(f"Sheets/Drive no disponible para completar fechas: {e}", LogLevel.ERROR, "WARN")
+        if lineage is not None:
+            lineage.advertencias.append(
+                f"Sheets/Drive no disponible para completar {len(dates)} fechas ({e})"
+            )
+        return result
+
+    newest_rev_id = revisions[-1]['id'] if revisions else None
+    oldest_rev = revisions[0] if revisions else None
+
+    # Agrupar por revision_id para minimizar descargas
+    rev_id_to_dates: dict[str, list[date]] = defaultdict(list)
+    sin_revision: list[date] = []
+    for d in sorted(dates):
+        rev = _revision_for_date(revisions, d) if revisions else None
+        if rev is None and approximate_older:
+            rev = oldest_rev  # aproximación si la fecha es anterior a la primera revisión
+        if rev:
+            rev_id_to_dates[rev['id']].append(d)
+        else:
+            sin_revision.append(d)
+
+    if sin_revision:
+        msg = (f"{len(sin_revision)} fechas sin revisión Drive que las cubra "
+               f"(desde {sin_revision[0].strftime('%d/%m/%Y')}): quedan a forward-fill")
+        log(msg, LogLevel.ERROR, "WARN")
+        if lineage is not None:
+            lineage.advertencias.append(msg)
+
+    folder_path = Path(save_folder) if save_folder else None
+
+    for rev_id, dates_for_rev in rev_id_to_dates.items():
+        snapshot_rows = (
+            live_all_rows if rev_id == newest_rev_id
+            else _fetch_revision_raw(sheet_id, rev_id, creds, tab_name)
+        )
+        if snapshot_rows is None:
+            log(f"Revisión {rev_id}: descarga fallida", LogLevel.DEBUG, "REV")
+            continue
+
+        for d in dates_for_rev:
+            records = _extract_cedula_vertical_for_date(snapshot_rows, d)
+            if not records:
+                continue
+
+            df_d = pd.DataFrame(records)
+            df_d = df_d.rename(columns={'Unidad': 'Unidades'})
+            if 'Unidades' not in df_d.columns:
+                continue
+            df_d['Unidades'] = df_d['Unidades'].str.strip().str.upper()
+            df_d['Fecha Cedula'] = d.strftime('%d/%m/%Y')
+            df_d['Fecha Cedula_dt'] = pd.Timestamp(d)
+            result[d] = df_d
+            if lineage is not None:
+                lineage.fechas_drive.append(d)
+
+            # Guardar xlsx en carpeta para reusar en futuras ejecuciones.
+            # Nunca sobrescribe: si Beto crea después un diario a mano para
+            # esta fecha, la fusión v0.6.4 le da la autoridad al diario.
+            if folder_path is not None:
+                try:
+                    cols_save = [
+                        c for c in Config.COLUMNS["units"] + Config.COLUMNS["units_extra"]
+                        if c in df_d.columns
+                    ]
+                    fname = f"Cedula {d.strftime('%d%m%Y')} Completa.xlsx"
+                    out_path = folder_path / fname
+                    if not out_path.exists():
+                        df_d[cols_save].to_excel(out_path, engine='openpyxl', index=False)
+                        log(f"Drive API → guardado: {fname}", code="SAVE")
+                except Exception:
+                    pass
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -579,94 +721,24 @@ def load_cedulas_for_period(
     )
 
     # ------------------------------------------------------------------
-    # Paso 2: conectar a Sheets + listar revisiones Drive API
-    # ------------------------------------------------------------------
-    try:
-        creds = Credentials.from_service_account_file(
-            Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
-        )
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sheet_id)
-        if tab_name is None:
-            tab_name = sh.worksheets()[0].title
-        ws = sh.worksheet(tab_name)
-        live_all_rows = ws.get_all_values()
-        revisions = _list_revisions(sheet_id, creds)
-        log(f"Drive API: {len(revisions)} revisiones disponibles", LogLevel.DEBUG, "REV")
-    except Exception as e:
-        log(f"Error conectando a Sheets/Drive API: {e}", LogLevel.ERROR, "ERR")
-        if dates_physical:
-            log("Usando solo archivos físicos disponibles", LogLevel.ERROR, "WARN")
-            if lineage is not None:
-                lineage.advertencias.append(f"Sheets/Drive inaccesible ({e}): solo archivos físicos")
-                lineage.fechas_ffill = sorted(d for d in all_dates if d not in dates_physical)
-            df = pd.concat(list(dates_physical.values()), ignore_index=True)
-            df['Fecha Cedula_dt'] = pd.to_datetime(df['Fecha Cedula_dt'])
-            return _finalize_cedulas_df(df)
-        return None
-
-    # ------------------------------------------------------------------
-    # Paso 3: fechas faltantes → complementar con Drive API
+    # Pasos 2-3: fechas faltantes → historial de revisiones Drive API
+    # (lógica centralizada en fetch_dates_from_revisions, v0.6.5)
     # ------------------------------------------------------------------
     dates_missing = [d for d in all_dates if d not in dates_physical]
     if dates_missing:
         log(f"Fechas sin archivo físico: {len(dates_missing)} → consultando Drive API",
             code="REV")
 
-    newest_rev_id = revisions[-1]['id'] if revisions else None
-    oldest_rev = revisions[0] if revisions else None
-
-    # Agrupar por revision_id para minimizar descargas
-    rev_id_to_dates: dict[str, list[date]] = defaultdict(list)
-    for d in dates_missing:
-        rev = _revision_for_date(revisions, d) if revisions else None
-        if rev is None:
-            rev = oldest_rev  # aproximación si la fecha es anterior a la primera revisión
-        if rev:
-            rev_id_to_dates[rev['id']].append(d)
-        # Sin revisión disponible: quedará para forward-fill
-
-    n_drive_added = 0
-    for rev_id, dates_for_rev in rev_id_to_dates.items():
-        snapshot_rows = (
-            live_all_rows if rev_id == newest_rev_id
-            else _fetch_revision_raw(sheet_id, rev_id, creds, tab_name)
-        )
-        if snapshot_rows is None:
-            log(f"Revisión {rev_id}: descarga fallida", LogLevel.DEBUG, "REV")
-            continue
-
-        for d in dates_for_rev:
-            records = _extract_cedula_vertical_for_date(snapshot_rows, d)
-            if not records:
-                continue
-
-            df_d = pd.DataFrame(records)
-            df_d = df_d.rename(columns={'Unidad': 'Unidades'})
-            if 'Unidades' not in df_d.columns:
-                continue
-            df_d['Unidades'] = df_d['Unidades'].str.strip().str.upper()
-            df_d['Fecha Cedula'] = d.strftime('%d/%m/%Y')
-            df_d['Fecha Cedula_dt'] = pd.Timestamp(d)
-            dates_physical[d] = df_d
-            n_drive_added += 1
-            if lineage is not None:
-                lineage.fechas_drive.append(d)
-
-            # Guardar xlsx en carpeta para reusar en futuras ejecuciones
-            if folder_path is not None:
-                try:
-                    cols_save = [
-                        c for c in Config.COLUMNS["units"] + Config.COLUMNS["units_extra"]
-                        if c in df_d.columns
-                    ]
-                    fname = f"Cedula {d.strftime('%d%m%Y')} Completa.xlsx"
-                    out_path = folder_path / fname
-                    if not out_path.exists():
-                        df_d[cols_save].to_excel(out_path, engine='openpyxl', index=False)
-                        log(f"Drive API → guardado: {fname}", code="SAVE")
-                except Exception:
-                    pass
+    fetched = fetch_dates_from_revisions(
+        sheet_id, log, dates_missing,
+        tab_name=tab_name,
+        save_folder=cedulas_folder if folder_path is not None else None,
+        approximate_older=True,  # semántica histórica de la fuente sheets
+        lineage=lineage,
+    )
+    n_drive_added = len(fetched)
+    for d, df_d in fetched.items():
+        dates_physical[d] = df_d
 
     # ------------------------------------------------------------------
     # Paso 4: reporte de cobertura

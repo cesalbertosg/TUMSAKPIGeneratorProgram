@@ -1,15 +1,22 @@
 # Plan — Completar fechas faltantes en modo Excel desde el historial de revisiones (Drive)
 
-> **DIFERIDO (2026-07-08).** Este plan vivía en `plan.md` y fue desplazado por el plan
-> v0.6.4 (trazabilidad de cédulas + fusión complementaria), que atiende el error de
-> prioridades diagnosticado con los datos de junio 2026. El relleno de huecos desde Drive
-> en modo excel queda como **fase futura independiente**; las decisiones ya marcadas por
-> Beto abajo se conservan como punto de partida. Prerrequisito al retomarlo: v0.6.4
-> implementado (el `gap_fetcher` debe registrar sus descargas en `CedulaLineage` y las
-> fechas bajadas deben aparecer en la hoja "Fuente Cedulas").
+> **IMPLEMENTADO — v0.6.5 (2026-07-09)**, sobre la base v0.6.4 (lineage + fusión).
+> Deltas respecto a las decisiones originales, confirmados por Beto el 09/07/2026:
+> - **(b)** los días descargados se guardan como `Cedula DDMMYYYY Completa.xlsx`
+>   (instrucción explícita de Beto; el nombre "(Drive)" quedó descartado) — así la
+>   fusión v0.6.4 les da rol de variante y un diario a mano posterior les gana.
+> - Días anteriores a toda revisión: **NO se aproximan** con la revisión más vieja
+>   (`approximate_older=False` en excel; la fuente sheets conserva la aproximación) —
+>   quedan al forward-fill con advertencia, sin fabricar archivo.
+> - Fix colateral: `_extract_cedula_vertical_for_date` ahora tolera encabezados de
+>   fecha datetime de los XLSX de revisión (antes las revisiones intermedias
+>   extraían 0 registros).
+> - Hallazgo: Google consolida el historial en ~1 semana → el gap-filler es para
+>   huecos recientes; meses viejos dependen del guardado manual.
+> Detalle en `docs/cambios.md` (0.6.5) y `docs/cedula-fallbacks-y-respaldo.md`.
 
-> Documento de trabajo. Beto corrige/anota aquí antes de implementar.
-> Estado: **PROPUESTA — sin implementar**. Versión objetivo: por definir (post v0.6.4).
+> Documento histórico del diseño. Decisiones originales abajo (las marcadas [x]
+> se implementaron salvo los deltas anotados arriba).
 
 ## 0. Objetivo en una línea
 

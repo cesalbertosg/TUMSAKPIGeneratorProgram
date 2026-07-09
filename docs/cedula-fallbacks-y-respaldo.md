@@ -324,11 +324,29 @@ sube a Sheets) y como resumen de una línea en log `[SRC]`, CLI y diálogo de
 `%APPDATA%\KPI Generator\gui_state.json` (el `.env` solo decide la primera
 sesión).
 
-### Orden de precedencia consolidado (fuente `excel`, v0.6.4)
+### Orden de precedencia consolidado (fuente `excel`, v0.6.5)
 
 ```
 1. Cédula física diaria (Cedula DDMMYYYY.xlsx)         [autoritativa]
 2. Variante "Completa" de la misma fecha                [solo rellena vacíos]
-3. fill_missing_dates (forward-fill entre físicos)      [último recurso]
-4. _apply_cedula_fallbacks (capa universal, sin cambios)
+3. Gap-filler Drive (v0.6.5): fechas del rango de       [solo fechas SIN
+   viajes sin archivo → historial de revisiones,         archivo físico;
+   guardadas como Cedula DDMMYYYY Completa.xlsx          best-effort]
+4. fill_missing_dates (forward-fill entre físicos)      [último recurso]
+5. _apply_cedula_fallbacks (capa universal, sin cambios)
 ```
+
+Notas del gap-filler (decisiones Beto 09/07/2026):
+
+- Rango de "faltantes" = `derive_date_range(zmov)` (rango de viajes).
+- Un día anterior a toda revisión disponible NO se aproxima ni genera
+  archivo: queda al forward-fill con advertencia (`approximate_older=False`;
+  la fuente `sheets` conserva la aproximación histórica).
+- Sin internet/credenciales: degrada con aviso visible; el modo excel nunca
+  aborta por red. Con la carpeta completa, ni siquiera conecta (100% offline
+  como siempre).
+- Los archivos descargados nunca sobrescriben existentes; en corridas
+  posteriores son físicos (variante) y un diario a mano posterior de la misma
+  fecha les gana por fusión.
+- Retención del historial: Google consolida las revisiones del Sheet en ~una
+  semana — el gap-filler es para huecos recientes (mes en curso).
