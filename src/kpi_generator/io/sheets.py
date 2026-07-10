@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import io as _io
 import re
+import time as _time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -607,43 +608,78 @@ def load_cedula_from_sheet(sheet_id: str, log: LogCallback,
         return None
 
 
+# Reintentos ante errores transitorios de Google (v0.6.6 — incidente 09/07/2026:
+# un 503 momentáneo obligaba a rehacer el pipeline completo de ~3-5min solo para
+# reintentar la subida). 3 intentos totales; delay antes del 2°/3° intento.
+_SHEETS_MAX_ATTEMPTS = 3
+_SHEETS_BACKOFF_SECONDS = (2, 8)
+_SHEETS_TRANSIENT_API_CODES = {429, 500, 502, 503, 504}
+
+
+def _is_transient_sheets_error(e: Exception) -> bool:
+    """Errores que vale la pena reintentar: rate-limit/5xx de la API o red caída.
+
+    NO reintenta credenciales/permisos (401/403) — esos fallan rápido, igual que hoy.
+    """
+    if isinstance(e, gspread.exceptions.APIError):
+        return e.code in _SHEETS_TRANSIENT_API_CODES
+    return isinstance(e, (_req.exceptions.ConnectionError, _req.exceptions.Timeout))
+
+
 def sync_workbook_to_sheets(sheets_id: str, dfs: dict[str, pd.DataFrame],
-                            log: LogCallback) -> bool:
+                            log: LogCallback,
+                            sleep_fn: Callable[[float], None] = _time.sleep) -> bool:
     """Sube todos los DataFrames a Google Sheets, un tab por entry de `dfs`.
 
     `dfs` es un dict `{nombre_tab: dataframe}`. Cada DataFrame se sobreescribe
     completamente (clear + update) o se crea como tab nuevo si no existia.
     DataFrames vacios o `None` se omiten silenciosamente.
 
-    Devuelve `True` si todo OK, `False` ante cualquier excepcion (loggea el error).
+    Reintenta con backoff (`_SHEETS_MAX_ATTEMPTS` intentos) errores transitorios
+    (429/5xx, timeouts de red) — reconecta y re-sube todo desde cero en cada intento
+    (`ws.clear()+update()` es idempotente, así que no hay riesgo de estado parcial).
+    Errores de credenciales/permisos no se reintentan.
+
+    `sleep_fn` es inyectable para tests (evita esperar tiempo real).
+
+    Devuelve `True` si todo OK, `False` tras agotar los intentos (loggea el error).
     """
-    try:
-        log("Conectando a Google Sheets...", code="SHEETS")
-        creds = Credentials.from_service_account_file(
-            Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
-        )
-        gc = gspread.authorize(creds)
-        sh = gc.open_by_key(sheets_id)
+    for attempt in range(1, _SHEETS_MAX_ATTEMPTS + 1):
+        try:
+            log("Conectando a Google Sheets...", code="SHEETS")
+            creds = Credentials.from_service_account_file(
+                Config.CREDENTIALS_PATH, scopes=Config.SHEETS_SCOPES
+            )
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(sheets_id)
 
-        for tab_name, df in dfs.items():
-            if df is None or df.empty:
+            for tab_name, df in dfs.items():
+                if df is None or df.empty:
+                    continue
+                df_str = df.fillna('').astype(str)
+                data = [df_str.columns.tolist()] + df_str.values.tolist()
+                try:
+                    ws = sh.worksheet(tab_name)
+                except gspread.WorksheetNotFound:
+                    ws = sh.add_worksheet(title=tab_name, rows=len(df) + 2, cols=len(df.columns) + 1)
+                ws.clear()
+                ws.update(data, value_input_option='USER_ENTERED')
+                log(f"Sheets '{tab_name}': {len(df)} filas", code="SHEETS")
+
+            log("Google Sheets actualizado correctamente", code="SHEETS")
+            return True
+
+        except Exception as e:
+            if _is_transient_sheets_error(e) and attempt < _SHEETS_MAX_ATTEMPTS:
+                delay = _SHEETS_BACKOFF_SECONDS[attempt - 1]
+                log(f"Error transitorio en Sheets (intento {attempt}/{_SHEETS_MAX_ATTEMPTS}): "
+                    f"{e} — reintentando en {delay}s...", LogLevel.ERROR, "SHEETS")
+                sleep_fn(delay)
                 continue
-            df_str = df.fillna('').astype(str)
-            data = [df_str.columns.tolist()] + df_str.values.tolist()
-            try:
-                ws = sh.worksheet(tab_name)
-            except gspread.WorksheetNotFound:
-                ws = sh.add_worksheet(title=tab_name, rows=len(df) + 2, cols=len(df.columns) + 1)
-            ws.clear()
-            ws.update(data, value_input_option='USER_ENTERED')
-            log(f"Sheets '{tab_name}': {len(df)} filas", code="SHEETS")
+            log(f"Error Google Sheets: {e}", LogLevel.ERROR, "SHEETS")
+            return False
 
-        log("Google Sheets actualizado correctamente", code="SHEETS")
-        return True
-
-    except Exception as e:
-        log(f"Error Google Sheets: {e}", LogLevel.ERROR, "SHEETS")
-        return False
+    return False  # inalcanzable (el for siempre retorna), por completitud de tipos
 
 
 def load_cedulas_for_period(

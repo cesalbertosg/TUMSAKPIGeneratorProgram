@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.6 — 2026-07-10 (Retry en Sheets + hardening del instalador contra tags desactualizados)
+
+Incidente 09/07/2026: al correr el KPI de julio, la subida a Google Sheets falló tras
+~3 minutos con `APIError: [503]` (caída momentánea de Google) sin ningún reintento —
+obligando a rehacer el pipeline completo solo para reintentar la subida. Investigando
+el mismo log se encontró un problema más grave: el GUI reportaba `v0.6.4` en vez de
+`v0.6.5` (recién instalado), sin ningún log `[RNG]/[REV]/[COV]` del gap-filler — el
+reporte de julio se generó con cédulas cubriendo solo 01-02/07 en vez de hasta 08/07.
+
+### Causa raíz del incidente de versión
+
+El instalador de v0.6.5 se lanzó **antes** de hacer `git push` del tag a GitHub. En
+modo "Actualizar", `GetLatestTag()` (`install_mode_wizard.pas`) consulta el tag más
+reciente *publicado en GitHub* — en ese momento seguía siendo `v0.6.4`, así que se
+instaló esa versión en silencio pese a que el instalador ya traía v0.6.5 embebida.
+
+### Retry con backoff en Sheets (`io/sheets.py`)
+
+- `sync_workbook_to_sheets`: hasta 3 intentos con backoff (2s, 8s) ante errores
+  transitorios — `gspread.exceptions.APIError` con código 429/500/502/503/504, o
+  `ConnectionError`/`Timeout` de red. Errores de credenciales/permisos (401/403) NO
+  se reintentan, fallan igual de rápido que antes.
+  Reconecta y re-sube todo desde cero en cada intento (`ws.clear()+update()` es
+  idempotente — sin riesgo de estado parcial entre tabs).
+- `sleep_fn` inyectable (default `time.sleep`) para tests sin tiempo real.
+
+### Hardening del instalador (`install_mode_wizard.pas`)
+
+- Nueva salvaguarda en modo "Actualizar": si el tag más reciente en GitHub no es
+  **estrictamente mayor** (comparación semver X.Y.Z) que la versión que el instalador
+  ya trae embebida, se avisa y se usa la versión bundled en vez de instalar una igual
+  o más vieja en silencio. Evita repetir este mismo incidente si un instalador se
+  lanza antes de publicar su tag.
+
+### Tests
+
+- Nuevo `tests/unit/test_sync_workbook_retry.py` (5 tests): retry hasta éxito ante
+  503, sin retry ante 403, agota los 3 intentos, regresión de éxito al primer intento,
+  errores de red también son transitorios. Suite: 176 tests unit.
+
 ## 0.6.5 — 2026-07-09 (Gap-filler Drive en modo excel: auto-completar cédulas faltantes)
 
 El modo `excel` ahora es un automatizador completo: si a la carpeta de cédulas

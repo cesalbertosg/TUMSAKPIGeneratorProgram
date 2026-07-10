@@ -126,6 +126,46 @@ begin
   Result := Copy(Line, P + 1, Q - 1);
 end;
 
+// --- Parsea "X.Y.Z" (sin 'v') en 3 enteros; partes faltantes/no numericas -> 0 ---
+procedure ParseVersion(Ver: string; var Major, Minor, Patch: Integer);
+var
+  P: Integer;
+begin
+  Major := 0; Minor := 0; Patch := 0;
+  P := Pos('.', Ver);
+  if P = 0 then begin
+    Major := StrToIntDef(Ver, 0);
+    Exit;
+  end;
+  Major := StrToIntDef(Copy(Ver, 1, P - 1), 0);
+  Ver := Copy(Ver, P + 1, Length(Ver));
+
+  P := Pos('.', Ver);
+  if P = 0 then begin
+    Minor := StrToIntDef(Ver, 0);
+    Exit;
+  end;
+  Minor := StrToIntDef(Copy(Ver, 1, P - 1), 0);
+  Ver := Copy(Ver, P + 1, Length(Ver));
+
+  Patch := StrToIntDef(Ver, 0);
+end;
+
+// --- True si VerA ("X.Y.Z", sin 'v') es estrictamente mayor que VerB ---
+// Salvaguarda (incidente 09/07/2026): un instalador puede compilarse y lanzarse
+// ANTES de publicar su tag en GitHub. Sin esta comparacion, modo "Actualizar"
+// instalaria en silencio la version anterior que SI estaba publicada.
+function IsVersionGreater(const VerA, VerB: string): Boolean;
+var
+  MajA, MinA, PatA, MajB, MinB, PatB: Integer;
+begin
+  ParseVersion(VerA, MajA, MinA, PatA);
+  ParseVersion(VerB, MajB, MinB, PatB);
+  if MajA <> MajB then begin Result := MajA > MajB; Exit; end;
+  if MinA <> MinB then begin Result := MinA > MinB; Exit; end;
+  Result := PatA > PatB;
+end;
+
 // --- Descarga el archive ZIP de un tag desde GitHub ---
 function DownloadRepoAtTag(const Tag, DestPath: string): Boolean;
 var
@@ -165,6 +205,8 @@ end;
 // Se llama desde NextButtonClick(ModePage.ID). Retorna False si el wizard
 // debe pararse (caso uninstall ya ejecutado).
 function HandleModeSelection(): Boolean;
+var
+  TagVersion: string;
 begin
   Result := True;
   if RbUninstall.Checked then begin
@@ -181,6 +223,21 @@ begin
       MsgBox('No se pudo consultar el ultimo release en GitHub. ' +
              'Verifica conexion a internet. Volviendo a Reinstalar.', mbInformation, MB_OK);
       InstallMode := 'reinstall';
+      OverrideTag := '';
+      RbReinstall.Checked := True;
+      Exit;
+    end;
+    // Salvaguarda: si GitHub aun no tiene un tag mas nuevo que el que ya trae
+    // este instalador (p.ej. se lanzo antes de publicar el tag), no instalar
+    // una version igual o mas vieja en silencio -> usar la version bundled.
+    TagVersion := Copy(OverrideTag, 2, Length(OverrideTag)); // quita 'v'
+    if not IsVersionGreater(TagVersion, '{#MyAppVersion}') then begin
+      MsgBox('GitHub reporta la version ' + OverrideTag + ', pero este instalador ' +
+             'ya trae la v{#MyAppVersion}.' + #13#10 +
+             'Se usara la version incluida en este instalador en su lugar.',
+             mbInformation, MB_OK);
+      InstallMode := 'reinstall';
+      OverrideTag := '';
       RbReinstall.Checked := True;
       Exit;
     end;
