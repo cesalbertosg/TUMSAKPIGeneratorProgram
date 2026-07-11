@@ -310,6 +310,17 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                         LogLevel.ERROR, "ERR")
                     return None
 
+                # Celda vacia en una columna de units -> NaN (float), no ''.
+                # clasificar_tipo_equipo/categoria_status (domain/equipment.py)
+                # llaman .strip() sobre estos valores; un NaN ahi revienta con
+                # 'float' object has no attribute 'strip' (bug real 10/07/2026,
+                # detonado por dias auto-descargados del gap-filler v0.6.5 con
+                # algun campo vacio). NO se toca units_extra (Operador/No
+                # Operador/...): esas columnas pueden llegar numericas desde
+                # Excel y crossfill_cedulas ya normaliza su dtype al cruzar.
+                for col in required_cols:
+                    df[col] = df[col].fillna('')
+
                 fecha = parsed.fecha
                 df['Fecha Cedula'] = fecha.strftime("%d/%m/%Y")
                 df['Fecha Cedula_dt'] = fecha
@@ -503,6 +514,12 @@ def load_local_cedulas_for_crossfill(cedulas_folder: str, log: LogCallback) -> p
 
                 if not all(col in df.columns for col in required_cols):
                     continue
+
+                # Mismo blindaje que load_daily_cedulas: celda vacia -> ''
+                # en vez de NaN, solo en las columnas de units (no toca
+                # units_extra, que puede llegar numerica desde Excel).
+                for col in required_cols:
+                    df[col] = df[col].fillna('')
 
                 df['Unidades'] = df['Unidades'].astype(str).str.strip().str.upper()
                 df['Fecha Cedula_dt'] = fecha

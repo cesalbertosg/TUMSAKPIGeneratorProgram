@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.7 — 2026-07-11 (Fix: NaN en celda vacía de cédula reventaba `.strip()` en Por Equipo)
+
+Corriendo julio con días de cédula auto-descargados por el gap-filler (v0.6.5), el
+pipeline truena justo después de "Foto cédula" con
+`'float' object has no attribute 'strip'`. Causa raíz: `load_daily_cedulas`
+(`io/excel.py`) leía cada archivo con `pd.read_excel(file_path)` sin `dtype=str` ni
+`.fillna('')` — una celda vacía en una columna de `units` (p. ej. `Tipo de Unidad`)
+llega como `NaN` (float), no `''`. `clasificar_tipo_equipo`/`categoria_status`
+(`domain/equipment.py`) reciben ese valor y llaman `.strip()` protegidos solo por
+`if not valor:` — pero `NaN` es *truthy* en Python (`not float('nan')` == `False`), así
+que el guard no lo atrapa y revienta. Nunca se vio con cédulas tecleadas a mano
+(siempre 100% pobladas); lo detonó un campo vacío en un snapshot vertical descargado
+del historial del Sheet (`_extract_cedula_vertical_for_date`).
+
+- `io/excel.py`: `load_daily_cedulas` y `load_local_cedulas_for_crossfill` ahora hacen
+  `.fillna('')` en las columnas de `Config.COLUMNS["units"]` tras la lectura — mismo
+  patrón que ya usaba `load_cedulas_for_period` (fuente `sheets`). Deliberadamente NO
+  se toca `units_extra` (Operador/No Operador/...): esas columnas pueden llegar
+  numéricas desde Excel y `crossfill_cedulas` ya normaliza su dtype al cruzar
+  (comportamiento cubierto por test existente, no se altera).
+- `domain/equipment.py`: `clasificar_tipo_equipo` y `categoria_status` agregan
+  `pd.isna(valor)` al guard — defensa en profundidad ante cualquier fuente futura
+  (BD, otra ruta de carga) que entregue NaN, no solo el caso de hoy.
+- Verificado con la carpeta real que causó el crash (`Cedulas para Auto`, 10 días,
+  todos variantes "Completa"): el pipeline ahora completa hasta `[END]` sin `[CRIT]`.
+- 8 tests nuevos (179 unit en total).
+
+
 ## 0.6.6 — 2026-07-10 (Retry en Sheets + hardening del instalador contra tags desactualizados)
 
 Incidente 09/07/2026: al correr el KPI de julio, la subida a Google Sheets falló tras

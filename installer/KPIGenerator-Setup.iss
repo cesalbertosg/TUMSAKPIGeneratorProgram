@@ -7,10 +7,10 @@
 ; Ver README-installer.md para preparacion previa.
 
 #define MyAppName "KPI Generator"
-#define MyAppVersion "0.6.6"
+#define MyAppVersion "0.6.7"
 #define MyAppPublisher "TUMSA"
 #define MyAppURL "https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram"
-#define RELEASE_TAG "v0.6.6"
+#define RELEASE_TAG "v0.6.7"
 
 [Setup]
 AppId={{B1C5E8A3-4F2D-4A1E-9B7C-2E8D5F3C7A91}

@@ -111,6 +111,25 @@ def test_categoria_status(estatus: str, esperado: str) -> None:
     assert categoria_status(estatus or '') == esperado
 
 
+# ---------- NaN directo (bug real 10/07/2026) ----------
+#
+# Una celda vacia leida de Excel sin dtype=str/fillna llega como NaN (float),
+# no ''. NaN es truthy en Python (`not float('nan')` == False), asi que un
+# guard `if not valor:` no lo atrapa y `.strip()` revienta con
+# "'float' object has no attribute 'strip'". io/excel.py ya blinda la lectura
+# (fillna('') en columnas de units), pero estas funciones deben ser a prueba
+# de NaN por si mismas ante cualquier otra fuente futura.
+
+def test_clasificar_tipo_equipo_con_nan_no_truena() -> None:
+    assert clasificar_tipo_equipo(float('nan')) == 'Motriz'
+    assert clasificar_tipo_equipo(pd.NA) == 'Motriz'
+
+
+def test_categoria_status_con_nan_no_truena() -> None:
+    assert categoria_status(float('nan')) == 'Otros Status'
+    assert categoria_status(pd.NA) == 'Otros Status'
+
+
 # ---------- normalize_text ----------
 
 @pytest.mark.parametrize("value,esperado", [

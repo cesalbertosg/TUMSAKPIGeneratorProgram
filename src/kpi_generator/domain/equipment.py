@@ -78,7 +78,10 @@ DOLLY_TIPOS = {
 
 def clasificar_tipo_equipo(tipo_unidad: str) -> str:
     """Mapea `Tipo de Unidad` BD a `Tipo Equipo` (`Motriz`/`Remolque`/`Dolly`)."""
-    if not tipo_unidad:
+    # NaN es truthy en Python (`not float('nan')` == False), asi que un valor
+    # faltante de una fuente que no garantiza '' (ver io/excel.py) se colaba
+    # hasta .strip() y reventaba con AttributeError (bug real 10/07/2026).
+    if pd.isna(tipo_unidad) or not tipo_unidad:
         return 'Motriz'
     tu = tipo_unidad.strip().upper()
     if tu in REMOLQUE_TIPOS:
@@ -116,7 +119,9 @@ def categoria_status(estatus: str) -> str:
     Acentos (Gestoría -> Gestoria) y diferencias de mayusculas (Puesto a
     Punto -> Puesto A Punto) se normalizan antes del match.
     """
-    if not estatus:
+    # Mismo blindaje que clasificar_tipo_equipo: NaN es truthy, no lo atrapa
+    # `if not estatus:` y revienta en .strip() (bug real 10/07/2026).
+    if pd.isna(estatus) or not estatus:
         return 'Otros Status'
     e = normalize_text(estatus.strip())
     return _STATUS_LOOKUP.get(e.lower(), 'Otros Status')

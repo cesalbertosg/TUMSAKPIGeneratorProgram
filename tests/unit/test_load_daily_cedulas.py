@@ -460,6 +460,24 @@ def test_gap_fetcher_vacio_o_parcial(tmp_path) -> None:
     assert len(con_fetcher) == len(sin_fetcher) == 3  # días 1, 2(ffill), 3
 
 
+def test_celda_vacia_en_columna_units_llega_como_string_vacio(tmp_path) -> None:
+    """Bug real (10/07/2026): una celda vacia de 'Tipo de Unidad' (tipico en
+    dias auto-descargados por el gap-filler v0.6.5, donde el snapshot vertical
+    puede no traer ese campo para alguna unidad) llegaba como NaN (float) y
+    tronaba mas adelante en clasificar_tipo_equipo/categoria_status con
+    "'float' object has no attribute 'strip'". Debe llegar como '' (str)."""
+    pd.DataFrame([_fila_diario(**{'Tipo de Unidad': None, 'Operando': None})]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+
+    result = load_daily_cedulas(str(tmp_path), _NOLOG)
+
+    assert result is not None
+    fila = result.iloc[0]
+    assert fila['Tipo de Unidad'] == ''
+    assert isinstance(fila['Tipo de Unidad'], str)
+    assert fila['Operando'] == ''
+
+
 def test_crossfill_local_duplicado_no_multiplica_filas() -> None:
     """Dos filas locales con la misma clave (dos archivos de la misma fecha)
     no deben multiplicar las filas del primario en el merge left."""
