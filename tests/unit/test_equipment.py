@@ -443,9 +443,14 @@ def test_aggregate_detalle_opcedula_agrupa_por_equipo_y_opcedula() -> None:
     assert mars['Equipo Motriz'] == 'L7'
     assert mars['KM Total'] == 120
     assert mars['Viajes'] == 1
+    assert mars['Dias Activo'] == 1
     axion = df_detalle[df_detalle['Operación cedula'] == 'AXION LOG CAMIONETA'].iloc[0]
     assert axion['KM Total'] == 300  # 240 + 60; el comodato (1998) queda excluido
     assert axion['Viajes'] == 2
+    # 2 fechas distintas (06-02, 06-03) con viaje real bajo AXION — v0.6.9,
+    # insumo de Rendimiento_dia_activo en opcedula.py (no cuenta el dia del
+    # comodato, que ya esta excluido de df_trips_validos).
+    assert axion['Dias Activo'] == 2
 
 
 def test_aggregate_detalle_opcedula_vacio_sin_columna() -> None:
@@ -460,4 +465,5 @@ def test_aggregate_detalle_opcedula_vacio_sin_columna() -> None:
     assert list(df_detalle.columns) == [
         'Equipo Motriz', 'Operación cedula', 'KM Cargado', 'KM Vacio',
         'KM Total', 'Diesel LTS', 'Rendimiento', 'Viajes', 'Densidad Viaje',
+        'Dias Activo',
     ]

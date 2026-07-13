@@ -21,8 +21,10 @@ Reglas:
 - `Objetivo KM` consolidado = Objetivo KM Diario de la OpCedula × motrices
   titulares × dias corrientes.
 - `Tendencia KM` = Σ Tendencia KM individual (se calcula despues, en post-pass).
-- `Promedio KM/dia/unidad` = KM Total / Σ Dias Asignado (sirve como insumo
-  para calcular `Tendencia KM` individual en el post-pass del processor).
+- `Promedio KM/dia/unidad` = KM Total / Σ Dias Activo de ESTA OpCedula (v0.6.9;
+  antes dividia entre Σ Dias Asignado, diluyendo el promedio con unidades
+  totalmente inactivas — ver `post_calcular_tendencia`). Sirve como insumo
+  para calcular `Tendencia KM`/`Potencial KM` individual en el post-pass.
 
 Tambien se calcula `post_calcular_tendencia` que toma df_equipos + df_opcedula
 y rellena `Tendencia KM` / `Tendencia Viajes` en cada equipo y su agregado.
@@ -60,6 +62,9 @@ OPCEDULA_OUTPUT_COLS = [
     # Insumo para Tendencia individual + agregado
     'Promedio KM dia unidad', 'Promedio Viajes dia unidad',
     'Tendencia KM', 'Tendencia Viajes',
+    # v0.6.9: proyeccion aislada (Tendencia - Real), al final para no romper
+    # posiciones existentes en Looker Studio.
+    'Potencial KM', 'Potencial Viajes',
 ]
 
 
@@ -190,10 +195,19 @@ class OpcedulaAggregator:
             diesel = float(fuente_operativa['Diesel LTS'].sum())
             viajes = int(fuente_operativa['Viajes'].sum())
             motrices_utilizadas = int(fuente_operativa['Equipo Motriz'].nunique())
+            # Dias con actividad real ESPECIFICA de esta OpCedula (no el total
+            # del mes del equipo, que puede incluir otra OpCedula si fue
+            # reasignado) — insumo del Promedio KM/Viajes dia unidad de abajo,
+            # v0.6.9.
+            dias_activos_opcedula = (
+                int(fuente_operativa['Dias Activo'].sum())
+                if 'Dias Activo' in fuente_operativa.columns else 0
+            )
         else:
             km_cargado = km_vacio = km_total = diesel = 0.0
             viajes = 0
             motrices_utilizadas = 0
+            dias_activos_opcedula = 0
         rendimiento = round(km_total / diesel, 2) if diesel > 0 else 0.0
         densidad = round(km_total / viajes, 2) if viajes > 0 else 0.0
 
@@ -220,9 +234,16 @@ class OpcedulaAggregator:
         denom = max(n_titulares * self.period.dias_corrientes, 1)
         pct_operativo = round(dias_activos / denom * 100, 2)
 
-        # Insumo para Tendencia individual: promedio KM/dia/unidad asignado
-        promedio_km = round(km_total / dias_asignados, 4) if dias_asignados > 0 else 0.0
-        promedio_v = round(viajes / dias_asignados, 4) if dias_asignados > 0 else 0.0
+        # Insumo para Tendencia individual: rendimiento de un dia REALMENTE
+        # trabajado en esta OpCedula (v0.6.9). Antes dividia entre TODOS los
+        # dias asignados por cedula (`dias_asignados`, linea arriba) —
+        # incluidos los de unidades totalmente inactivas ese mes— diluyendo
+        # el promedio y descontando la capacidad operativa del grupo DOS
+        # veces (una aqui, otra al multiplicar por el %Operativo propio de
+        # cada unidad en `post_calcular_tendencia`). Ahora divide solo entre
+        # dias con actividad real atribuida a esta OpCedula especificamente.
+        promedio_km = round(km_total / dias_activos_opcedula, 4) if dias_activos_opcedula > 0 else 0.0
+        promedio_v = round(viajes / dias_activos_opcedula, 4) if dias_activos_opcedula > 0 else 0.0
 
         return {
             'Operacion Cedula': opcedula,
@@ -255,51 +276,95 @@ class OpcedulaAggregator:
             'Promedio Viajes dia unidad': promedio_v,
             'Tendencia KM': 0.0,         # se rellena en post_calcular_tendencia
             'Tendencia Viajes': 0.0,
+            'Potencial KM': 0.0,         # idem
+            'Potencial Viajes': 0.0,
         }
 
 
 def post_calcular_tendencia(df_equipos: pd.DataFrame, df_opcedula: pd.DataFrame,
-                            period: PeriodContext) -> None:
-    """Rellena `Tendencia KM` / `Tendencia Viajes` en df_equipos in-place.
+                            period: PeriodContext,
+                            obj_mapping: Optional[Dict[str, Dict[str, float]]] = None) -> None:
+    """Rellena `Tendencia KM`/`Tendencia Viajes`/`Potencial KM`/`Potencial Viajes`
+    en df_equipos in-place, y actualiza los agregados en df_opcedula.
 
-    Formula (Beto v0.5.0):
-        Tendencia KM = KM Real + Dias restantes mes × Promedio KM dia unidad × % Operativo / 100
+    Formula (v0.6.9 — corrige doble descuento de capacidad operativa que
+    tenia la formula v0.5.0 original; ver docs/v0.5.0-design.md):
 
-    El promedio se toma de la OpCedula vigente del equipo (en df_opcedula). Si la
-    OpCedula vigente es POR ASIGNAR o no aparece en df_opcedula, la tendencia
-    es igual al KM real.
+        Potencial_obs  = Dias restantes × Rendimiento_dia_activo(OpCedula) × %Operativo(equipo)/100
+        Potencial_piso = Dias restantes × Objetivo_diario(OpCedula)        × %Operativo(equipo)/100
+        peso_evidencia = min(Dias_corrientes / (0.16 × Dias_mes), 1.0)
+        Potencial      = peso_evidencia × Potencial_obs + (1 − peso_evidencia) × Potencial_piso
+        Tendencia      = Real + Potencial
 
-    Despues actualiza la tendencia agregada en df_opcedula (Σ tendencias individuales).
+    `Rendimiento_dia_activo` = 'Promedio KM/Viajes dia unidad' de la OpCedula
+    vigente del equipo (df_opcedula — ya viene libre de dilucion de grupo,
+    ver `_fila_opcedula`: divide solo entre dias con actividad real de esa
+    OpCedula, no entre todos los dias asignados por cedula).
+
+    `%Operativo(equipo)` es una caracteristica propia de la unidad — ya
+    calculada en `EquipmentAggregator` sobre TODO su historial de viajes del
+    mes, agnostica de bajo que OpCedula estuvo cada dia — se reutiliza tal
+    cual, no se recalcula aqui. Esto evita que una unidad recien reasignada
+    "resetee" su confiabilidad probada por 1 solo dia bueno/malo en la
+    asignacion nueva (Beto, 2026-07-13).
+
+    `peso_evidencia` (Paso 4) evita proyecciones inestables en cortes muy
+    tempranos del mes: mezcla el potencial "observado" (Paso 3) con un piso
+    basado en el Objetivo diario de la OpCedula, y el peso del observado
+    crece conforme avanza el mes hasta ponderar 100% a partir del 16% de
+    `dias_mes` transcurridos.
+
+    Si la OpCedula vigente es POR ASIGNAR o no aparece en df_opcedula (sin
+    `Rendimiento_dia_activo` ni Objetivo coherentes), ambos terminos de
+    Potencial dan 0 de forma natural y la tendencia queda igual al real —
+    mismo comportamiento que la version anterior para este caso borde.
+
+    Despues actualiza los agregados en df_opcedula (Σ por OpCedula).
     """
     if df_equipos.empty:
         return
 
+    obj_mapping = obj_mapping or {}
     promedios_km = df_opcedula.set_index('Operacion Cedula')['Promedio KM dia unidad'].to_dict() \
         if not df_opcedula.empty else {}
     promedios_v = df_opcedula.set_index('Operacion Cedula')['Promedio Viajes dia unidad'].to_dict() \
         if not df_opcedula.empty else {}
 
     restantes = period.dias_restantes
+    umbral_dias = max(0.16 * period.dias_mes, 1e-9)
+    peso_evidencia = min(period.dias_corrientes / umbral_dias, 1.0)
 
     for idx, row in df_equipos.iterrows():
         km_real = float(row['KM Total'])
         viajes_real = float(row['Viajes'])
         pct_op = float(row['% Operativo']) / 100.0
         opcedula = row['Operacion Cedula']
-        prom_km = float(promedios_km.get(opcedula, 0) or 0)
-        prom_v = float(promedios_v.get(opcedula, 0) or 0)
-        df_equipos.at[idx, 'Tendencia KM'] = round(
-            km_real + restantes * prom_km * pct_op, 2
+
+        rendimiento_km = float(promedios_km.get(opcedula, 0) or 0)
+        rendimiento_v = float(promedios_v.get(opcedula, 0) or 0)
+        obj_entry = obj_mapping.get(opcedula, {})
+        obj_km_diario = float(obj_entry.get('Objetivo KM Diario', 0) or 0)
+        obj_v_diario = float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
+
+        potencial_km = (
+            peso_evidencia * (restantes * rendimiento_km * pct_op)
+            + (1 - peso_evidencia) * (restantes * obj_km_diario * pct_op)
         )
-        df_equipos.at[idx, 'Tendencia Viajes'] = round(
-            viajes_real + restantes * prom_v * pct_op, 2
+        potencial_v = (
+            peso_evidencia * (restantes * rendimiento_v * pct_op)
+            + (1 - peso_evidencia) * (restantes * obj_v_diario * pct_op)
         )
 
-    # Actualiza Tendencia agregada en df_opcedula. Equipos cuya OpCedula
-    # vigente no es clave de ninguna fila de df_opcedula (ej. 'POR ASIGNAR
-    # FULL') se reagrupan bajo 'Pendiente' si esa fila existe, para que su
-    # Tendencia KM (= KM real, sin proyeccion, ya calculada arriba) no se
-    # pierda silenciosamente.
+        df_equipos.at[idx, 'Potencial KM'] = round(potencial_km, 2)
+        df_equipos.at[idx, 'Potencial Viajes'] = round(potencial_v, 2)
+        df_equipos.at[idx, 'Tendencia KM'] = round(km_real + potencial_km, 2)
+        df_equipos.at[idx, 'Tendencia Viajes'] = round(viajes_real + potencial_v, 2)
+
+    # Actualiza agregados en df_opcedula. Equipos cuya OpCedula vigente no es
+    # clave de ninguna fila de df_opcedula (ej. 'POR ASIGNAR FULL') se
+    # reagrupan bajo 'Pendiente' si esa fila existe, para que su Tendencia KM
+    # (= KM real, sin proyeccion, ya calculada arriba) no se pierda
+    # silenciosamente.
     if df_opcedula.empty:
         return
     motrices = df_equipos[df_equipos['Tipo Equipo'] == 'Motriz'].copy()
@@ -307,11 +372,15 @@ def post_calcular_tendencia(df_equipos: pd.DataFrame, df_opcedula: pd.DataFrame,
     motrices['_bucket'] = motrices['Operacion Cedula'].where(
         motrices['Operacion Cedula'].isin(claves_reales), 'Pendiente'
     )
-    tend_por_opcedula = motrices.groupby('_bucket').agg(
+    agregados = motrices.groupby('_bucket').agg(
         Tendencia_KM=('Tendencia KM', 'sum'),
         Tendencia_Viajes=('Tendencia Viajes', 'sum'),
+        Potencial_KM=('Potencial KM', 'sum'),
+        Potencial_Viajes=('Potencial Viajes', 'sum'),
     )
-    for opcedula, row in tend_por_opcedula.iterrows():
+    for opcedula, row in agregados.iterrows():
         mask = df_opcedula['Operacion Cedula'] == opcedula
         df_opcedula.loc[mask, 'Tendencia KM'] = round(row['Tendencia_KM'], 2)
         df_opcedula.loc[mask, 'Tendencia Viajes'] = round(row['Tendencia_Viajes'], 2)
+        df_opcedula.loc[mask, 'Potencial KM'] = round(row['Potencial_KM'], 2)
+        df_opcedula.loc[mask, 'Potencial Viajes'] = round(row['Potencial_Viajes'], 2)

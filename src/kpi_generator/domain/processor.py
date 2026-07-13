@@ -1272,8 +1272,8 @@ class DataProcessor:
             )
             df_opcedula = opcedula_agg.aggregate()
 
-            # Segundo pase: rellena Tendencia KM/Viajes (in-place en ambos)
-            post_calcular_tendencia(df_kpi, df_opcedula, period)
+            # Segundo pase: rellena Tendencia/Potencial KM/Viajes (in-place en ambos)
+            post_calcular_tendencia(df_kpi, df_opcedula, period, obj_mapping)
 
             df_changes = self.change_tracker.track_operation_changes(
                 data['cedulas'], obj_mapping

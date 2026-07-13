@@ -142,6 +142,7 @@ _NUMERIC_EQUIPO_COLS = frozenset({
     'Objetivo KM Total', 'Objetivo Viajes Total',
     'Cump KM %', 'Cump Viajes %', '% Operativo',
     'Tendencia KM', 'Tendencia Viajes',
+    'Potencial KM', 'Potencial Viajes',
 })
 
 # Columnas del DataFrame que produce `EquipmentAggregator.aggregate()`.
@@ -175,6 +176,9 @@ EQUIPO_OUTPUT_COLS = [
     # Ultimo viaje (excluye comodatos)
     'Numero de Viaje', 'Fecha Ult Viaje', 'Centro', 'Tipo De Operacion',
     'Ruta', 'Denominacion', 'Alias Origen', 'Alias Destino', 'ClaveCategoria',
+    # v0.6.9: proyeccion aislada (Tendencia - Real), al final para no romper
+    # posiciones existentes en Looker Studio.
+    'Potencial KM', 'Potencial Viajes',
 ]
 
 
@@ -290,9 +294,16 @@ class EquipmentAggregator:
         historica distinta que tuvo durante el periodo. Reusa
         `_metricas_operativas` para que KM/Diesel/Viajes se deriven igual que
         en Por Equipo (mismas columnas, mismos fallbacks).
+
+        `Dias Activo` (v0.6.9) = dias con >=1 viaje valido que el equipo tuvo
+        ESPECIFICAMENTE bajo esta OpCedula (no su historial completo del mes,
+        que puede abarcar otra OpCedula previa/posterior si fue reasignado) —
+        insumo del "Rendimiento dia activo" limpio de dilucion en
+        `opcedula.py::_fila_opcedula`.
         """
         cols = ['Equipo Motriz', 'Operación cedula', 'KM Cargado', 'KM Vacio',
-                'KM Total', 'Diesel LTS', 'Rendimiento', 'Viajes', 'Densidad Viaje']
+                'KM Total', 'Diesel LTS', 'Rendimiento', 'Viajes', 'Densidad Viaje',
+                'Dias Activo']
         if self.df_trips_validos.empty or 'Operación cedula' not in self.df_trips_validos.columns:
             return pd.DataFrame(columns=cols)
 
@@ -305,6 +316,7 @@ class EquipmentAggregator:
                 'Equipo Motriz': equipo,
                 'Operación cedula': opcedula,
                 **self._metricas_operativas(grupo),
+                'Dias Activo': self._dias_activo(grupo),
             })
         if not registros:
             return pd.DataFrame(columns=cols)
@@ -756,5 +768,7 @@ class EquipmentAggregator:
             'Tendencia KM': 0.0,    # placeholder, lo llena post_calcular_tendencia
             'Tendencia Viajes': 0.0,
             **ultimo,
+            'Potencial KM': 0.0,    # idem
+            'Potencial Viajes': 0.0,
         }
         return fila

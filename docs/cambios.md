@@ -1,6 +1,51 @@
 # Changelog
 
+## 0.6.9 — 2026-07-13 (Tendencia KM/Viajes: elimina doble descuento de capacidad operativa)
+
+Beto detectó que "Tendencia KM" (proyección a fin de mes) salía sistemáticamente baja:
+la capacidad operativa de cada unidad se descontaba **dos veces** — una al diluir el
+promedio de KM/día de la Operación Cédula entre TODOS los días asignados de TODAS sus
+unidades (incluidas las totalmente inactivas), y otra al multiplicar ese promedio ya
+diluido por el `% Operativo` propio de cada unidad. Caso real (13/07, "MARS TORTHON
+RF", corte día 12, 3 de 8 unidades sin actividad ese mes): Tendencia KM Total salía en
+3,946.85 km; con el fix sale en **7,054.40 km** — casi el doble, y ahora reparte esa
+proyección según qué tan confiable fue cada unidad, no solo cuánto KM acumuló.
+
+- `domain/opcedula.py`: `Promedio KM/Viajes dia unidad` ahora divide entre `Σ Dias
+  Activo` de la Operación Cédula (días con actividad real) en vez de `Σ Dias Asignado`
+  (que incluía días de unidades totalmente inactivas, diluyendo el promedio del grupo).
+- `domain/equipment.py::aggregate_detalle_opcedula`: nueva columna `Dias Activo` por
+  (equipo × Operación Cédula histórica) — insumo del punto anterior; no confunde el
+  historial completo del equipo (que puede abarcar otra operación si fue reasignado)
+  con su actividad específica en ESTA operación.
+- `post_calcular_tendencia` (`opcedula.py`): reutiliza el `% Operativo` que YA existe a
+  nivel equipo (calculado sobre todo el historial de viajes del mes, agnóstico de
+  Operación Cédula) — una unidad recién reasignada no "resetea" su confiabilidad
+  probada por 1 solo día bueno/malo en la asignación nueva.
+- Nuevo piso de estabilidad para cortes tempranos del mes: mezcla ponderada entre el
+  ritmo observado y el Objetivo KM/Viajes diario × `% Operativo`, con peso creciente
+  conforme avanza el mes (100% ritmo observado a partir del 16% de días transcurridos).
+- Nuevas columnas `Potencial KM`/`Potencial Viajes` (= Tendencia − Real) en `Por
+  Equipo` y `Por Operación`, agregadas **al final** de cada hoja para no romper
+  posiciones existentes en Looker Studio.
+- Identidad matemática verificada: el TOTAL de Tendencia de una Operación Cédula
+  (sin piso activo) equivale a `KM Total × Dias mes / Dias corrientes` — pero el
+  reparto entre unidades ya no es proporcional al KM acumulado, sino a cuántos días
+  realmente trabajó cada una.
+- 13 tests nuevos/actualizados en `test_opcedula.py`/`test_equipment.py` (184 unit en
+  total), incluida una reproducción simplificada del caso real de doble descuento.
+- Documentado en `docs/v0.5.0-design.md` (sección "Tendencia KM").
+
 ## 0.6.8 — 2026-07-13 (Instalador: eliminar `.env` generado con plantilla hardcodeada)
+
+**Verificado en producción (2026-07-13, mismo día):** tras agregar manualmente
+`SHEETS_ID_CEDULAS` al `.env` de la instalación standalone (única variable que
+seguía faltando; ver sección de abajo), Beto confirmó con capturas de Looker Studio
+que el pipeline completo — gap-filler (v0.6.5) + trazabilidad de cédulas (v0.6.4) +
+subida a Sheets — funciona correctamente de punta a punta en la instalación real de
+producción. Con v0.6.8 instalado, esta configuración ya sobrevive a la próxima
+reinstalación (antes se perdía en cada una — ver causa raíz abajo).
+
 
 Causa raíz de que el gap-filler dejara de funcionar en la instalación de producción:
 `WriteEnvFile` (`installer/pascal/env_writer.pas`) se llamaba **incondicionalmente** en
