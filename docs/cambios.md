@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.8 — 2026-07-13 (Instalador: eliminar `.env` generado con plantilla hardcodeada)
+
+Causa raíz de que el gap-filler dejara de funcionar en la instalación de producción:
+`WriteEnvFile` (`installer/pascal/env_writer.pas`) se llamaba **incondicionalmente** en
+cada instalación/reinstalación (`KPIGenerator-Setup.iss:192`), **sobrescribiendo** el
+`.env` — incluso el que `RestoreCredentialsFromTmp` (línea 163) acababa de restaurar
+intacto de una instalación previa — con una plantilla fija de 6 líneas que nunca incluyó
+`SHEETS_ID_CEDULAS`. Cualquier clave agregada a mano al `.env` (como la que Beto añadió
+el 10/07 para el gap-filler) se perdía en la siguiente reinstalación.
+
+Beto: *"No suena muy seguro que el programa traiga variables de entorno hardcodeados...
+El env se debe pasar ya llenado a la carpeta de secretos manualmente."*
+
+- `env_writer.pas`: se elimina `WriteEnvFile` por completo — el instalador ya no genera
+  ni conoce el contenido del `.env`.
+- `credentials_wizard.pas`: se elimina la página "Google Sheets ID" (y el
+  `DEFAULT_SHEETS_ID` hardcodeado que la prellenaba) y la de confirmación. Nueva página
+  "Archivo de configuración (.env)": selector de archivo (mismo patrón que ya existía
+  para el JSON del Service Account) que **copia tal cual** el `.env` que Beto haya
+  preparado de antemano — el instalador nunca ve ni construye su contenido.
+- `KPIGenerator-Setup.iss`: nuevo `ShouldSkipPage` — la página del `.env` solo aparece en
+  instalación **nueva**; en "Reinstalar"/"Actualizar" se salta por completo y
+  `RestoreCredentialsFromTmp` preserva el `.env` existente sin que nada lo toque después.
+  Validación en `NextButtonClick` (archivo seleccionado y existente) antes de continuar.
+- El JSON del Service Account (`WriteServiceAccountJson`/`PageJson`) **no cambia** en esta
+  versión — decisión explícita de Beto, queda para una pasada futura si se decide.
+- `installer/README-installer.md` actualizado: instrucciones para preparar el `.env` y
+  copiarlo al USB junto al `KPIGenerator-Setup.exe` antes de una instalación nueva.
+
+
 ## 0.6.7 — 2026-07-11 (Fix: NaN en celda vacía de cédula reventaba `.strip()` en Por Equipo)
 
 Corriendo julio con días de cédula auto-descargados por el gap-filler (v0.6.5), el

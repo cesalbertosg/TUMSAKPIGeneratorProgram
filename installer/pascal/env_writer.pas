@@ -1,20 +1,12 @@
 // env_writer.pas
-// Escritura de .env y secrets/google_service_account.json + aplicacion de
+// Escritura de secrets/google_service_account.json + aplicacion de
 // ACL restrictivo (solo el usuario actual puede leer/escribir).
-
-procedure WriteEnvFile(const RepoDir: string; const SheetsId: string);
-var
-  EnvContent: TArrayOfString;
-begin
-  SetArrayLength(EnvContent, 6);
-  EnvContent[0] := '# Generado por KPIGenerator-Setup.exe';
-  EnvContent[1] := '# No editar manualmente salvo necesidad.';
-  EnvContent[2] := '';
-  EnvContent[3] := 'CEDULAS_SOURCE=excel';
-  EnvContent[4] := 'SHEETS_ID_KPI=' + SheetsId;
-  EnvContent[5] := 'GOOGLE_CREDENTIALS_PATH=secrets/google_service_account.json';
-  SaveStringsToFile(RepoDir + '\.env', EnvContent, False);
-end;
+//
+// NOTA (v0.6.8): el instalador YA NO genera .env con una plantilla
+// hardcodeada. El .env se copia tal cual desde un archivo que el usuario
+// selecciona (ver PageEnvFile en credentials_wizard.pas) o se preserva de
+// una instalacion previa via RestoreCredentialsFromTmp — nunca se
+// construye a partir de valores baked-in al instalador.
 
 procedure WriteServiceAccountJson(const RepoDir: string; const JsonText: string);
 var

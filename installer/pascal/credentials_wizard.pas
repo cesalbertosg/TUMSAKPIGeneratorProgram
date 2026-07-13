@@ -1,23 +1,27 @@
 // credentials_wizard.pas
-// 3 paginas custom del installer:
+// 2 paginas custom del installer:
 //   1. Service Account JSON (textarea grande + boton "Cargar archivo")
-//   2. Google Sheets ID (prellenado con SHEETS_ID del KPI KM Auto)
-//   3. Confirmacion (CEDULAS_SOURCE=excel, recap)
+//   2. Archivo .env (selector de archivo — se COPIA tal cual, nunca se
+//      genera desde una plantilla ni valores hardcodeados en el instalador)
 //
-// Estas paginas alimentan las variables globales PageJson, PageSheetsId,
-// PageConfirm declaradas en KPIGenerator-Setup.iss.
-
-// Sheet por defecto del wizard (puede ser sobrescrito).
-const
-  DEFAULT_SHEETS_ID = '1sv8P004Ej85D_GF4YwEmoBO1XqWR1KYdGOSb1FJWM8Y';
+// v0.6.8: se elimino la pagina de "Google Sheets ID" + el .env generado por
+// WriteEnvFile (plantilla fija con SHEETS_ID_KPI y un DEFAULT_SHEETS_ID
+// hardcodeado en este archivo). Ahora el .env se prepara de antemano
+// (fuera del instalador) y solo se copia — cero valores de configuracion
+// viven en el codigo fuente del instalador. En "Reinstalar"/"Actualizar"
+// esta pagina ni aparece: RestoreCredentialsFromTmp (env_writer.pas) ya
+// preserva el .env existente sin tocarlo.
+//
+// Estas paginas alimentan las variables globales PageJson, PageEnvFile
+// declaradas aqui, y SelectedEnvPath (leido desde KPIGenerator-Setup.iss).
 
 // --- Variables globales del wizard (compartidas con KPIGenerator-Setup.iss) ---
 var
   PageJson: TInputQueryWizardPage;
-  PageSheetsId: TInputQueryWizardPage;
-  PageConfirm: TOutputMsgWizardPage;
+  PageEnvFile: TInputQueryWizardPage;
+  SelectedEnvPath: string;
 
-// --- Boton "Cargar desde archivo" en pagina 1 ---
+// --- Boton "Cargar desde archivo" en pagina 1 (JSON) ---
 procedure OnLoadJsonClick(Sender: TObject);
 var
   SelectedFile: string;
@@ -43,10 +47,31 @@ begin
   end;
 end;
 
-// --- Crear las 3 paginas ---
+// --- Boton "Seleccionar archivo .env..." en pagina 2 ---
+// A diferencia del JSON (que se lee y re-escribe), aqui solo se guarda la
+// RUTA elegida — CurStepChanged en el .iss hace un CopyFile puro. El
+// contenido del .env nunca pasa por Pascal ni queda hardcodeado aqui.
+procedure OnLoadEnvClick(Sender: TObject);
+var
+  SelectedFile: string;
+begin
+  SelectedFile := '';
+  if GetOpenFileName(
+       'Selecciona el archivo .env ya preparado',
+       SelectedFile,
+       '',
+       'Archivo .env (*.env;.env)|*.env;.env|Todos (*.*)|*.*',
+       '') then begin
+    SelectedEnvPath := SelectedFile;
+    PageEnvFile.Values[0] := SelectedFile;
+  end;
+end;
+
+// --- Crear las 2 paginas ---
 procedure CreateCredentialsPages();
 var
-  LoadButton: TNewButton;
+  LoadJsonButton: TNewButton;
+  LoadEnvButton: TNewButton;
 begin
   // Pagina 1: Service Account JSON
   PageJson := CreateInputQueryPage(
@@ -58,39 +83,35 @@ begin
   );
   PageJson.Add('Service Account JSON:', False);
 
-  // Boton "Cargar desde archivo" debajo del textarea
-  LoadButton := TNewButton.Create(WizardForm);
-  LoadButton.Parent := PageJson.Surface;
-  LoadButton.Caption := 'Cargar desde archivo...';
-  LoadButton.Top := PageJson.Edits[0].Top + PageJson.Edits[0].Height + 8;
-  LoadButton.Left := PageJson.Edits[0].Left;
-  LoadButton.Width := 180;
-  LoadButton.Height := 25;
-  LoadButton.OnClick := @OnLoadJsonClick;
+  LoadJsonButton := TNewButton.Create(WizardForm);
+  LoadJsonButton.Parent := PageJson.Surface;
+  LoadJsonButton.Caption := 'Cargar desde archivo...';
+  LoadJsonButton.Top := PageJson.Edits[0].Top + PageJson.Edits[0].Height + 8;
+  LoadJsonButton.Left := PageJson.Edits[0].Left;
+  LoadJsonButton.Width := 180;
+  LoadJsonButton.Height := 25;
+  LoadJsonButton.OnClick := @OnLoadJsonClick;
 
-  // Pagina 2: Google Sheets ID
-  PageSheetsId := CreateInputQueryPage(
+  // Pagina 2: archivo .env (solo en instalacion nueva — ver ShouldSkipPage
+  // en KPIGenerator-Setup.iss, que la salta si ya hay una instalacion
+  // previa cuyo .env se va a restaurar).
+  PageEnvFile := CreateInputQueryPage(
     PageJson.ID,
-    'Google Sheet de destino',
-    'ID del Sheet "KPI KM Auto" donde se publicaran los KPIs',
-    'El installer prellena el ID del Sheet de produccion. ' +
-    'Cambialo solo si Yaneth tiene un Sheet propio.'
+    'Archivo de configuracion (.env)',
+    'Selecciona el archivo .env ya preparado con las credenciales',
+    'Beto te debio compartir un archivo .env listo (junto con el JSON, ' +
+    'normalmente en el mismo USB). Selecciona su ubicacion — se copia tal ' +
+    'cual, el instalador no genera ni modifica su contenido.'
   );
-  PageSheetsId.Add('SHEETS_ID_KPI:', False);
-  PageSheetsId.Values[0] := DEFAULT_SHEETS_ID;
+  PageEnvFile.Add('Archivo .env:', False);
+  PageEnvFile.Edits[0].ReadOnly := True;
 
-  // Pagina 3: Confirmacion
-  PageConfirm := CreateOutputMsgPage(
-    PageSheetsId.ID,
-    'Resumen de configuracion',
-    'Revisa antes de instalar',
-    'KPI Generator se instalara con los siguientes valores:' + #13#10 +
-    '' + #13#10 +
-    '  - Fuente de cedulas: Excel (carpeta seleccionada en la GUI)' + #13#10 +
-    '  - Google Sheets: configurado con el ID que indicaste' + #13#10 +
-    '  - Service Account: el JSON se guardara en {app}\repo\secrets\' + #13#10 +
-    '' + #13#10 +
-    'Solo Yaneth tendra permisos de lectura sobre el .env y secrets/. ' +
-    'Si necesitas cambiar algun valor mas tarde, edita los archivos manualmente.'
-  );
+  LoadEnvButton := TNewButton.Create(WizardForm);
+  LoadEnvButton.Parent := PageEnvFile.Surface;
+  LoadEnvButton.Caption := 'Seleccionar archivo .env...';
+  LoadEnvButton.Top := PageEnvFile.Edits[0].Top + PageEnvFile.Edits[0].Height + 8;
+  LoadEnvButton.Left := PageEnvFile.Edits[0].Left;
+  LoadEnvButton.Width := 200;
+  LoadEnvButton.Height := 25;
+  LoadEnvButton.OnClick := @OnLoadEnvClick;
 end;

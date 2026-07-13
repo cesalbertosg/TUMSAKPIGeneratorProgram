@@ -13,11 +13,15 @@ Distribucion: USB fisico → doble-click → wizard.
 2. Extrae **Python 3.14.4 embedded** (incluido en `bundle/`).
 3. Descarga la ultima release del repo (`https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram/archive/refs/tags/{TAG}.zip`).
 4. `pip install -e .` (sin extras `db` — Yaneth NO usa PostgreSQL).
-5. Wizard custom de credenciales:
+5. Wizard custom de credenciales (v0.6.8+, solo en instalacion **nueva** —
+   en Reinstalar/Actualizar se saltan, el `.env` existente se preserva tal
+   cual):
    - Pega Service Account JSON (o carga desde archivo).
-   - Confirma SHEETS_ID_KPI.
-   - Confirma `CEDULAS_SOURCE=excel`.
-6. Escribe `.env` y `secrets/google_service_account.json` con ACL restrictivo (solo Yaneth lee).
+   - Selecciona el archivo `.env` **ya preparado** de antemano por Beto
+     (junto al JSON, normalmente en el mismo USB) — el instalador lo copia
+     tal cual, no genera ni hardcodea ningun valor de configuracion.
+6. Copia `.env` (seleccionado) y escribe `secrets/google_service_account.json`
+   (desde el JSON pegado), con ACL restrictivo (solo Yaneth lee).
 7. Crea shortcuts: Desktop + Start Menu → `KPIGenerator.exe -m kpi_generator`.
 8. Finaliza con opcion de abrir la GUI.
 
@@ -29,9 +33,9 @@ Distribucion: USB fisico → doble-click → wizard.
 installer/
 ├── KPIGenerator-Setup.iss      # Script principal Inno Setup
 ├── pascal/
-│   ├── credentials_wizard.pas  # 3 paginas custom (JSON, SHEETS_ID, confirmacion)
+│   ├── credentials_wizard.pas  # 2 paginas custom (JSON, seleccionar .env) — solo instalacion nueva
 │   ├── repo_downloader.pas     # curl HTTPS al ZIP del tag
-│   └── env_writer.pas          # Escribe .env y secrets/ con UTF-8 + ACL
+│   └── env_writer.pas          # Escribe secrets/ (JSON) + backup/restore de .env + ACL
 ├── bundle/
 │   ├── python-3.14.4-embed-amd64.zip  # Python embebido oficial (~12 MB)
 │   ├── get-pip.py                       # Bootstrap de pip
@@ -100,8 +104,14 @@ Output: `installer\dist\KPIGenerator-Setup.exe` (~30 MB).
 ## Entrega
 
 1. Copiar `KPIGenerator-Setup.exe` al USB.
-2. Imprimir el LEEME.txt con pasos para Yaneth.
-3. Yaneth conecta USB → doble-click → sigue el wizard → tiene Service Account JSON a mano.
+2. Copiar tambien un `.env` **ya preparado** (con `SHEETS_ID_KPI`,
+   `GOOGLE_CREDENTIALS_PATH=secrets/google_service_account.json`,
+   `CEDULAS_SOURCE=excel`, etc.) al mismo USB — el wizard lo pide y lo copia
+   tal cual, no lo genera (v0.6.8+). Solo hace falta para instalacion
+   **nueva**; en reinstalaciones el `.env` existente se preserva solo.
+3. Imprimir el LEEME.txt con pasos para Yaneth.
+4. Yaneth conecta USB → doble-click → sigue el wizard → tiene Service
+   Account JSON y el `.env` preparado a la mano.
 
 ---
 

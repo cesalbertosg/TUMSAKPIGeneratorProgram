@@ -7,10 +7,10 @@
 ; Ver README-installer.md para preparacion previa.
 
 #define MyAppName "KPI Generator"
-#define MyAppVersion "0.6.7"
+#define MyAppVersion "0.6.8"
 #define MyAppPublisher "TUMSA"
 #define MyAppURL "https://github.com/cesalbertosg/TUMSAKPIGeneratorProgram"
-#define RELEASE_TAG "v0.6.7"
+#define RELEASE_TAG "v0.6.8"
 
 [Setup]
 AppId={{B1C5E8A3-4F2D-4A1E-9B7C-2E8D5F3C7A91}
@@ -74,6 +74,15 @@ begin
   if IsAlreadyInstalled() then
     CreateInstallModePage();
   CreateCredentialsPages();
+end;
+
+// PageEnvFile (seleccionar .env) solo aplica a instalacion NUEVA: en
+// Reinstalar/Actualizar, RestoreCredentialsFromTmp ya preserva el .env
+// existente sin tocarlo — pedir uno nuevo ahi seria redundante y arriesgaria
+// que alguien pise por accidente un .env que ya funciona.
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = PageEnvFile.ID) and IsAlreadyInstalled();
 end;
 
 // --- Borra repo/ y python/ pero CONSERVA repo\.env y repo\secrets\ ---
@@ -187,10 +196,15 @@ begin
       Abort;
     end;
 
-    // 5. Escribir .env y secrets/ desde las paginas del wizard
+    // 5. Credenciales: JSON se escribe desde la pagina del wizard (sin
+    //    cambios); .env se COPIA del archivo seleccionado — solo en
+    //    instalacion nueva (SelectedEnvPath queda '' en Reinstalar/
+    //    Actualizar porque PageEnvFile se salta via ShouldSkipPage, y
+    //    RestoreCredentialsFromTmp ya dejo el .env existente intacto).
     WizardForm.StatusLabel.Caption := 'Configurando credenciales...';
-    WriteEnvFile(RepoDir, PageSheetsId.Values[0]);
     WriteServiceAccountJson(RepoDir, PageJson.Values[0]);
+    if SelectedEnvPath <> '' then
+      CopyFile(SelectedEnvPath, RepoDir + '\.env', False);
     ApplyRestrictiveAcl(RepoDir + '\secrets\google_service_account.json');
     ApplyRestrictiveAcl(RepoDir + '\.env');
   end;
@@ -219,9 +233,14 @@ begin
     end;
   end;
 
-  if CurPageID = PageSheetsId.ID then begin
-    if Length(Trim(PageSheetsId.Values[0])) < 20 then begin
-      MsgBox('El ID del Google Sheet parece invalido (muy corto).', mbError, MB_OK);
+  if CurPageID = PageEnvFile.ID then begin
+    if Trim(SelectedEnvPath) = '' then begin
+      MsgBox('Selecciona el archivo .env antes de continuar.', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+    if not FileExists(SelectedEnvPath) then begin
+      MsgBox('El archivo .env seleccionado ya no existe. Vuelve a seleccionarlo.', mbError, MB_OK);
       Result := False;
       Exit;
     end;
