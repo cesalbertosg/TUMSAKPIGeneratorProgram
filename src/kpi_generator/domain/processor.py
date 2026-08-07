@@ -354,6 +354,12 @@ class DataProcessor:
                     approximate_older=False,
                     lineage=lineage,
                 )
+        elif fecha_min is not None:
+            # Sin Sheet ID no hay gap-filler: si ademas la carpeta esta vacia,
+            # load_daily_cedulas aborta — que quede dicho el porque (v0.6.10).
+            self.log("Sin Sheet ID de cédulas (CEDULA_SHEET_ID): no se completan "
+                     "fechas faltantes desde el historial Drive",
+                     LogLevel.ERROR, "WARN")
 
         df = self.load_daily_cedulas(cedulas_folder, lineage=lineage,
                                      fecha_min=fecha_min, fecha_max=fecha_max,

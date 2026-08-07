@@ -460,6 +460,59 @@ def test_gap_fetcher_vacio_o_parcial(tmp_path) -> None:
     assert len(con_fetcher) == len(sin_fetcher) == 3  # días 1, 2(ffill), 3
 
 
+# ---------- v0.6.10: carpeta vacía + historial Drive ----------
+
+def test_carpeta_vacia_se_reconstruye_desde_drive(tmp_path) -> None:
+    """Carpeta SIN cédulas físicas + gap_fetcher: se pide el rango completo a
+    Drive y la corrida continúa (antes abortaba con 'Sin archivos válidos')."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pedidas: list = []
+
+    def fetcher(faltantes):
+        pedidas.extend(faltantes)
+        return {d: _drive_frame(d) for d in faltantes}
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 3),
+        gap_fetcher=fetcher,
+    )
+
+    assert result is not None
+    assert pedidas == [date_cls(2026, 6, 1), date_cls(2026, 6, 2), date_cls(2026, 6, 3)]
+    assert result['Fecha Cedula_dt'].nunique() == 3
+    assert lineage.fechas_fisicas == []
+    assert lineage.fechas_drive == pedidas
+    assert lineage.fechas_ffill == []
+    assert not result.duplicated(subset=['Unidades', 'Fecha Cedula_dt']).any()
+
+
+def test_carpeta_vacia_sin_cobertura_drive_falla_limpio(tmp_path) -> None:
+    """Carpeta vacía + Drive sin nada útil ({}): falla con None y log ERROR,
+    sin reventar en fill_missing_dates (date_range sobre NaT)."""
+    logs: list = []
+
+    result = load_daily_cedulas(
+        str(tmp_path), lambda msg, *_a, **_k: logs.append(msg),
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 3),
+        gap_fetcher=lambda _f: {},
+    )
+
+    assert result is None
+    assert any('historial Drive' in m for m in logs)
+
+
+def test_carpeta_vacia_sin_fetcher_sigue_abortando(tmp_path) -> None:
+    """Regresión: sin gap_fetcher (sin Sheet ID o sin rango de viajes) una
+    carpeta vacía sigue siendo un fallo duro."""
+    assert load_daily_cedulas(str(tmp_path), _NOLOG) is None
+    assert load_daily_cedulas(
+        str(tmp_path), _NOLOG, gap_fetcher=lambda _f: {},
+    ) is None
+
+
 def test_celda_vacia_en_columna_units_llega_como_string_vacio(tmp_path) -> None:
     """Bug real (10/07/2026): una celda vacia de 'Tipo de Unidad' (tipico en
     dias auto-descargados por el gap-filler v0.6.5, donde el snapshot vertical

@@ -238,6 +238,9 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
       en el processor con `io.sheets.fetch_dates_from_revisions` — este modulo
       no importa red). Lo fisico jamas se toca ni se re-descarga. Best-effort:
       si el fetcher falla, esas fechas quedan al forward-fill como siempre.
+    - v0.6.10: con `gap_fetcher` + rango, una carpeta SIN cedulas fisicas ya no
+      aborta de entrada — se le pide a Drive el rango completo. Solo se falla
+      si tras el relleno no quedo ni una fila.
 
     Devuelve `None` ante cualquier error (carpeta invalida, archivos con
     formato no reconocido, columnas faltantes, etc.) — el caller debe
@@ -263,9 +266,24 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
             log(f"Archivos formato inválido: {len(invalid_files)}", LogLevel.ERROR, "ERR")
             return None
 
+        # v0.6.10: una carpeta sin cedulas fisicas ya no aborta de entrada si el
+        # gap-filler Drive puede cubrir el rango completo (caso tipico: mes
+        # nuevo, carpeta recien creada). Sin fetcher o sin rango no hay plan B
+        # y se falla igual que antes.
+        puede_rellenar = (gap_fetcher is not None
+                          and fecha_min is not None and fecha_max is not None)
         if not valid_files:
-            log("Sin archivos válidos", LogLevel.ERROR, "ERR")
-            return None
+            if not puede_rellenar:
+                log("Sin archivos válidos y sin historial Drive disponible "
+                    "(falta Sheet ID de cédulas o rango de viajes)",
+                    LogLevel.ERROR, "ERR")
+                return None
+            msg = ("Carpeta sin cédulas físicas: se intentará cubrir "
+                   f"{fecha_min.strftime('%d/%m/%Y')}–{fecha_max.strftime('%d/%m/%Y')} "
+                   "desde el historial de revisiones del Sheet")
+            log(msg, LogLevel.ERROR, "WARN")
+            if lineage is not None:
+                lineage.advertencias.append(msg)
 
         # Deteccion de carpeta sospechosa (la trampa del incidente de junio:
         # correr modo excel sobre una carpeta de descargas de Drive).
@@ -363,7 +381,11 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
             if lineage is not None:
                 lineage.archivos.extend(a for a, _df in entradas)
 
-        df_cedulas = pd.concat(consolidated_cedulas, ignore_index=True)
+        # Puede quedar vacio si la carpeta no tenia cedulas fisicas (v0.6.10):
+        # `pd.concat([])` revienta, asi que se arranca de un frame vacio y el
+        # gap-filler de abajo aporta todo el contenido.
+        df_cedulas = (pd.concat(consolidated_cedulas, ignore_index=True)
+                      if consolidated_cedulas else pd.DataFrame())
         fechas_fisicas = sorted(por_fecha)
 
         # Gap-filler Drive (v0.6.5): completar fechas del rango de viajes que
@@ -391,6 +413,10 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                 faltantes_set = set(faltantes)
                 descargadas = {d: v for d, v in descargadas.items() if d in faltantes_set}
 
+                # Acumular y concatenar una sola vez: con carpeta vacia
+                # `df_cedulas` no tiene columnas y concatenar en el bucle
+                # dispara FutureWarning ademas de ser O(n^2).
+                frames_drive: list[pd.DataFrame] = []
                 for d in sorted(descargadas):
                     df_d = descargadas[d]
                     if df_d is None or df_d.empty:
@@ -399,12 +425,26 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                         log(f"Día Drive {d}: columnas incompletas, se omite "
                             "(queda a forward-fill)", LogLevel.ERROR, "WARN")
                         continue
-                    df_d = df_d.drop_duplicates(subset=['Unidades'], keep='first')
-                    df_cedulas = pd.concat([df_cedulas, df_d], ignore_index=True)
+                    frames_drive.append(df_d.drop_duplicates(subset=['Unidades'],
+                                                             keep='first'))
                     fechas_drive.append(d)
+
+                if frames_drive:
+                    partes = ([df_cedulas] if not df_cedulas.empty else []) + frames_drive
+                    df_cedulas = pd.concat(partes, ignore_index=True)
 
                 log(f"Historial Drive aportó {len(fechas_drive)} de {len(faltantes)} "
                     "fechas faltantes; el resto queda a forward-fill", code="COV")
+
+        # v0.6.10: con carpeta vacia el gap-filler puede no haber aportado nada
+        # (rango anterior a toda revision de Drive, offline, tab sin datos del
+        # periodo). Sin una sola fila no hay reporte posible: falla clara aqui
+        # en vez de reventar en fill_missing_dates (date_range sobre NaT).
+        if df_cedulas.empty:
+            log("Sin cédulas físicas ni cobertura en el historial Drive para el "
+                "rango: no hay datos de cédula para el período",
+                LogLevel.ERROR, "ERR")
+            return None
 
         # Invariante v0.6.4: (Unidades, Fecha) unico tras consolidar — un
         # duplicado aqui multiplica viajes en el merge aguas abajo, asi que

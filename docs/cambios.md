@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.6.10 — 2026-08-07 (Modo excel: carpeta de cédulas vacía ya no aborta la corrida)
+
+En modo `excel`, una carpeta sin ningún `Cedula DDMMYYYY.xlsx` abortaba con "Sin
+archivos válidos" **antes** de consultar el historial de revisiones del Sheet — aunque
+Drive tuviera cubierto todo el rango de viajes. El gap-filler v0.6.5 vivía 100 líneas
+más abajo, después del `pd.concat` de los archivos físicos, así que solo funcionaba
+como *relleno* de huecos, nunca como *fuente única*. Caso real: mes nuevo, carpeta
+recién creada.
+
+- `io/excel.py::load_daily_cedulas`: el abort por "sin archivos válidos" ahora es
+  condicional — con `gap_fetcher` + rango de viajes se degrada a WARN y se le pide a
+  Drive el rango completo. Sin fetcher (falta `CEDULA_SHEET_ID`) o sin rango (zmov
+  ilegible) falla como antes, pero diciendo cuál de las dos cosas faltó.
+- Guard nuevo tras el gap-filler: si no quedó ni una fila, falla limpio con
+  "Sin cédulas físicas ni cobertura en el historial Drive para el rango" en vez de
+  reventar en `fill_missing_dates` (`date_range` sobre `NaT`).
+- `pd.concat` de los físicos protegido contra lista vacía; los días de Drive se
+  acumulan y se concatenan una sola vez (evita `FutureWarning` al concatenar sobre un
+  frame sin columnas, y el O(n²) del bucle).
+- El abort duro por archivos con nombre no parseable **se conserva**: es la guarda
+  contra correr el modo excel sobre una carpeta equivocada (incidente de junio 2026).
+- `domain/processor.py`: log `[WARN]` explícito cuando no hay `CEDULA_SHEET_ID` y por
+  tanto no se arma el gap-filler.
+- `gui/app.py::validate_inputs`: confirmación (`askyesno`) antes de arrancar en modo
+  excel con carpeta vacía — única señal previa de haber elegido mal la carpeta.
+- 3 tests nuevos en `test_load_daily_cedulas.py` (carpeta vacía reconstruida desde
+  Drive con linaje correcto; Drive sin cobertura → `None` limpio; regresión: sin
+  fetcher sigue abortando). 187 unit en total.
+- Documentado en `docs/cedula-fallbacks-y-respaldo.md` (tabla de comportamiento).
+
+Sigue aplicando la retención de ~1 semana del historial de Google: una carpeta vacía
+para un mes ya cerrado se reconstruye parcialmente o nada.
+
 ## 0.6.9 — 2026-07-13 (Tendencia KM/Viajes: elimina doble descuento de capacidad operativa)
 
 Beto detectó que "Tendencia KM" (proyección a fin de mes) salía sistemáticamente baja:

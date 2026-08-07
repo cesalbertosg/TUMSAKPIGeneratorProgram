@@ -540,7 +540,23 @@ class KPIGeneratorGUI:
         if source == 'excel' and not Path(self.paths["cedulas"].get()).is_dir():
             messagebox.showerror("Error de Carpeta", "La carpeta de cédulas no es válida")
             return False
-        
+
+        # v0.6.10: carpeta vacía ya no aborta el proceso (se reconstruye desde el
+        # historial del Sheet), pero es la única señal previa de que se eligió la
+        # carpeta equivocada — se confirma antes de gastar la corrida.
+        if source == 'excel' and not any(Path(self.paths["cedulas"].get()).glob("*.xlsx")):
+            if not messagebox.askyesno(
+                "Carpeta de cédulas vacía",
+                "La carpeta de cédulas no tiene ningún archivo .xlsx.\n\n"
+                "El programa intentará reconstruir el período desde el historial de "
+                "revisiones del Google Sheet (solo alcanza ~1 semana hacia atrás) y "
+                "guardará ahí los días que recupere.\n\n"
+                "¿Deseas continuar?\n\n"
+                "Elige 'No' si te equivocaste de carpeta.",
+            ):
+                return False
+
+
         objectives_path = self.paths["objectives"].get().strip()
         if objectives_path and not Path(objectives_path).exists():
             messagebox.showerror("Error de Archivo", "El archivo de objetivos no existe")

@@ -350,3 +350,28 @@ Notas del gap-filler (decisiones Beto 09/07/2026):
   fecha les gana por fusión.
 - Retención del historial: Google consolida las revisiones del Sheet en ~una
   semana — el gap-filler es para huecos recientes (mes en curso).
+
+### Carpeta de cédulas vacía (v0.6.10)
+
+Hasta v0.6.9, el modo `excel` sobre una carpeta sin ningún `Cedula
+DDMMYYYY.xlsx` abortaba con "Sin archivos válidos" **antes** de llegar al
+gap-filler — aunque el Sheet tuviera revisiones que cubrían todo el rango.
+Desde v0.6.10 el orden se invierte:
+
+| Situación | v0.6.9 | v0.6.10 |
+|---|---|---|
+| Carpeta vacía + Sheet ID + rango de viajes | aborta | WARN + se pide **todo** el rango a Drive |
+| Carpeta vacía sin Sheet ID o sin rango (zmov ilegible) | aborta | aborta, con el motivo explícito en el log |
+| Carpeta vacía + Drive sin cobertura útil | aborta | aborta tras intentar ("Sin cédulas físicas ni cobertura...") |
+| Archivos con nombre no parseable en la carpeta | aborta | **aborta igual** (guarda anti-carpeta-equivocada) |
+
+- El abort duro por nombres no parseables se conserva a propósito: es la
+  protección contra correr el modo excel sobre una carpeta de descargas
+  (incidente de junio 2026).
+- La GUI pide confirmación explícita antes de arrancar con carpeta vacía en
+  modo excel — es la única señal previa de que se eligió mal la carpeta.
+- En la corrida siguiente esos días ya son físicos (variantes "Completa"), así
+  que se dispara el WARN "la carpeta contiene SOLO variantes" — esperado.
+- Sigue aplicando la retención de ~1 semana: una carpeta vacía para un mes
+  cerrado se reconstruye solo parcialmente (o nada). El guardado manual diario
+  sigue siendo insustituible.
