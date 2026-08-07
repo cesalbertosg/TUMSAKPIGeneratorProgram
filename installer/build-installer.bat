@@ -5,19 +5,22 @@ REM Output: dist\KPIGenerator-Setup.exe
 
 setlocal
 
-REM Detectar Inno Setup 6 o 7+ en rutas tipicas
-set ISCC=
-if exist "C:\Program Files\Inno Setup 7\ISCC.exe" set ISCC="C:\Program Files\Inno Setup 7\ISCC.exe"
-if exist "C:\Program Files (x86)\Inno Setup 7\ISCC.exe" set ISCC="C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
-if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files\Inno Setup 6\ISCC.exe"
-if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set ISCC="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+REM Detectar Inno Setup 6 o 7+ en rutas tipicas.
+REM Las comillas van en el `set "VAR=valor"`, NO dentro del valor: guardarlas
+REM en la variable rompia el `if "%ISCC%"==""` de abajo ("No se esperaba
+REM Files\Inno en este momento") en cuanto alguna ruta existia.
+set "ISCC="
+if exist "C:\Program Files\Inno Setup 7\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 7\ISCC.exe"
+if exist "C:\Program Files (x86)\Inno Setup 7\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 7\ISCC.exe"
+if exist "C:\Program Files\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
+if exist "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
-if "%ISCC%"=="" (
+if not defined ISCC (
     echo [ERR] No se encontro ISCC.exe en ninguna ruta tipica.
     echo Instala Inno Setup desde https://jrsoftware.org/isdl.php
     exit /b 1
 )
-echo [INFO] Usando %ISCC%
+echo [INFO] Usando "%ISCC%"
 
 REM Verificar que el bundle de Python embebido existe
 if not exist "bundle\python-3.14.4-embed-amd64.zip" (
@@ -38,7 +41,7 @@ if not exist "bundle\icons\kpi.ico" (
 
 REM Compilar
 echo [INFO] Compilando KPIGenerator-Setup.iss...
-%ISCC% KPIGenerator-Setup.iss
+"%ISCC%" KPIGenerator-Setup.iss
 if errorlevel 1 (
     echo [ERR] Compilacion fallo.
     exit /b 1
