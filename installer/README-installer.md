@@ -124,6 +124,20 @@ Yaneth corre el installer otra vez:
 
 Para nueva version de KPI Generator: hacer release nuevo tag + recompilar installer + nuevo USB.
 
+### Actualizacion desatendida (maquina de Beto)
+
+Sobre una instalacion existente, el wizard completo no hace falta — las dos
+paginas de credenciales se saltan y `.env` + `secrets/` se respaldan y
+restauran solos:
+
+```powershell
+.\dist\KPIGenerator-Setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=install.log
+```
+
+Instala el `repo.zip` **bundled** (el tag de `#define RELEASE_TAG`), no consulta
+GitHub. En instalacion **nueva** el modo silencioso falla a proposito: sin JSON
+del Service Account no hay nada que instalar.
+
 ---
 
 ## Troubleshooting

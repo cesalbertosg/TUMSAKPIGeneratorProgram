@@ -76,13 +76,17 @@ begin
   CreateCredentialsPages();
 end;
 
-// PageEnvFile (seleccionar .env) solo aplica a instalacion NUEVA: en
-// Reinstalar/Actualizar, RestoreCredentialsFromTmp ya preserva el .env
-// existente sin tocarlo — pedir uno nuevo ahi seria redundante y arriesgaria
-// que alguien pise por accidente un .env que ya funciona.
+// Las DOS paginas de credenciales (JSON del Service Account y seleccion de
+// .env) solo aplican a instalacion NUEVA: en Reinstalar/Actualizar,
+// BackupCredentialsToTmp/RestoreCredentialsFromTmp preservan .env y secrets/
+// tal cual — pedirlos ahi seria redundante y arriesgaria pisar credenciales
+// que ya funcionan. Antes solo se saltaba PageEnvFile, asi que toda
+// actualizacion obligaba a re-pegar el JSON (y bloqueaba /VERYSILENT, que
+// igual corre la validacion de NextButtonClick sin mostrar la pagina).
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = PageEnvFile.ID) and IsAlreadyInstalled();
+  Result := ((PageID = PageEnvFile.ID) or (PageID = PageJson.ID))
+            and IsAlreadyInstalled();
 end;
 
 // --- Borra repo/ y python/ pero CONSERVA repo\.env y repo\secrets\ ---

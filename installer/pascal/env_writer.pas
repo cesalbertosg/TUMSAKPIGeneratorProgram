@@ -14,6 +14,12 @@ var
   JsonPath: string;
   Lines: TArrayOfString;
 begin
+  // Sin JSON no se toca nada. En instalacion silenciosa (/VERYSILENT) las
+  // paginas del wizard no corren, asi que PageJson.Values[0] llega vacio; sin
+  // esta guarda se sobrescribia con un archivo vacio el service account que
+  // RestoreCredentialsFromTmp acababa de restaurar.
+  if Trim(JsonText) = '' then Exit;
+
   SecretsDir := RepoDir + '\secrets';
   ForceDirectories(SecretsDir);
   JsonPath := SecretsDir + '\google_service_account.json';
