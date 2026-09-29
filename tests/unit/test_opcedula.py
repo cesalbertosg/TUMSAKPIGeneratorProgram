@@ -54,6 +54,12 @@ def _detalle(rows: list[dict]) -> pd.DataFrame:
     return df[_DETALLE_COLS]
 
 
+def _objetivo(rows: list[dict]) -> pd.DataFrame:
+    """Construye df_objetivo_opcedula (salida de aggregate_objetivo_opcedula)."""
+    return pd.DataFrame(rows, columns=['Equipo Motriz', 'Operación cedula',
+                                       'Objetivo KM Corte', 'Objetivo Viajes Corte'])
+
+
 # ---------- aggregate() basico ----------
 
 def test_agrega_una_fila_por_opcedula() -> None:
@@ -83,22 +89,63 @@ def test_agrega_una_fila_por_opcedula() -> None:
     assert vend_centro['Dias unidad activos'] == 10
 
 
-def test_excluye_por_asignar() -> None:
-    """Equipos con OpCedula que arranca con POR ASIGNAR van a la fila 'Pendiente'."""
+def test_por_asignar_tiene_fila_por_tipo() -> None:
+    """v0.7.0: cada 'POR ASIGNAR <tipo>' tiene su propia fila (Gerencia Pendiente).
+
+    Sin OpCedulas retiradas no hay fila 'Pendiente'.
+    """
     df_eq = _equipos([
         {'Equipo Motriz': 'C070', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'POR ASIGNAR FULL',
          'Estatus': 'Sin Asignacion'},
+        {'Equipo Motriz': 'T318', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'POR ASIGNAR SENCILLO',
+         'Estatus': 'Sin Asignacion'},
+        {'Equipo Motriz': 'T350', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'POR ASIGNAR SENCILLO',
+         'Estatus': 'Puesto a Punto'},
         {'Equipo Motriz': 'C200', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND CENTRO',
          'Gerencia': 'CUE', 'Operacion': 'VEND', 'Circuito': 'CENTRO', 'Tipo de Unidad': 'FULL',
          'Estatus': 'Operando', 'Dias Asignado': 10, 'Dias Activo': 8, 'KM Total': 100, 'Viajes': 5},
     ])
     df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=_period(),
                                 log_callback=lambda *_a, **_k: None).aggregate()
-    assert len(df_op) == 2
-    assert 'VEND CENTRO' in set(df_op['Operacion Cedula'])
-    pendiente = df_op[df_op['Operacion Cedula'] == 'Pendiente'].iloc[0]
-    assert pendiente['Gerencia'] == 'Pendiente'
-    assert pendiente['Motrices Titulares'] == 1
+    # Orden: vigentes reales, POR ASIGNAR por tipo, (Pendiente al final si hubiera)
+    assert list(df_op['Operacion Cedula']) == ['VEND CENTRO', 'POR ASIGNAR FULL', 'POR ASIGNAR SENCILLO']
+    sencillo = df_op[df_op['Operacion Cedula'] == 'POR ASIGNAR SENCILLO'].iloc[0]
+    assert sencillo['Gerencia'] == 'Pendiente'
+    assert sencillo['Operacion'] == 'POR ASIGNAR'
+    assert sencillo['Tipo de Unidad'] == 'SENCILLO'
+    assert sencillo['Motrices Titulares'] == 2
+    assert sencillo['Puesto A Punto'] == 1
+    assert sencillo['Otros Status'] == 0  # 'Sin Asignacion' no es "otro status"
+    assert df_op['Motrices Titulares'].sum() == 4  # todas las motrices, una sola vez
+
+
+def test_pendiente_solo_para_operaciones_retiradas() -> None:
+    """KM de dias POR ASIGNAR va a su fila por tipo; KM de una OpCedula retirada
+    (no vigente de nadie al corte) va a 'Pendiente'."""
+    df_eq = _equipos([
+        {'Equipo Motriz': 'T367', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'MERCADO LIBRE SENCILLO',
+         'Gerencia': 'SL', 'Operacion': 'MERCADO LIBRE', 'Circuito': 'TERCERO', 'Tipo de Unidad': 'SENCILLO',
+         'Estatus': 'Taller', 'KM Total': 900, 'Viajes': 9},
+    ])
+    df_detalle = _detalle([
+        {'Equipo Motriz': 'T367', 'Operación cedula': 'MERCADO LIBRE SENCILLO', 'KM Total': 500, 'Viajes': 5},
+        {'Equipo Motriz': 'T367', 'Operación cedula': 'POR ASIGNAR SENCILLO', 'KM Total': 300, 'Viajes': 3},
+        {'Equipo Motriz': 'T367', 'Operación cedula': 'PENAFIEL TEHUACAN SENCILLO', 'KM Total': 100, 'Viajes': 1},
+    ])
+    df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=_period(),
+                                df_detalle_opcedula=df_detalle,
+                                log_callback=lambda *_a, **_k: None).aggregate()
+
+    assert list(df_op['Operacion Cedula']) == ['MERCADO LIBRE SENCILLO', 'POR ASIGNAR SENCILLO', 'Pendiente']
+    por_op = df_op.set_index('Operacion Cedula')
+    # Titular (foto) solo en su ultima asignacion; utilizada donde viajo
+    assert por_op.loc['MERCADO LIBRE SENCILLO', 'Motrices Titulares'] == 1
+    assert por_op.loc['POR ASIGNAR SENCILLO', 'Motrices Titulares'] == 0
+    assert por_op.loc['POR ASIGNAR SENCILLO', 'Motrices Utilizadas'] == 1
+    assert por_op.loc['POR ASIGNAR SENCILLO', 'KM Total'] == 300
+    assert por_op.loc['Pendiente', 'KM Total'] == 100
+    assert por_op.loc['Pendiente', 'Tipo de Unidad'] == 'VARIOS'
+    assert df_op['KM Total'].sum() == 900  # nada se pierde
 
 
 def test_excluye_arrastres() -> None:
@@ -113,6 +160,31 @@ def test_excluye_arrastres() -> None:
     df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=_period(),
                                 log_callback=lambda *_a, **_k: None).aggregate()
     assert df_op.iloc[0]['Motrices Titulares'] == 1  # solo el motriz
+
+
+def test_remolques_y_dollies_titulares_por_motriz_dominante() -> None:
+    """v0.7.0: foto de arrastres por la vigente heredada de su motriz dominante.
+    Un arrastre sin motriz dominante (POR ASIGNAR) cae en su fila POR ASIGNAR."""
+    df_eq = _equipos([
+        {'Equipo Motriz': 'C070', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND CENTRO',
+         'Gerencia': 'CUE', 'Operacion': 'VEND', 'Circuito': 'CENTRO', 'Tipo de Unidad': 'FULL',
+         'Estatus': 'Operando'},
+        {'Equipo Motriz': '40331', 'Tipo Equipo': 'Remolque', 'Operacion Cedula': 'VEND CENTRO'},
+        {'Equipo Motriz': '40332', 'Tipo Equipo': 'Remolque', 'Operacion Cedula': 'VEND CENTRO'},
+        {'Equipo Motriz': 'D001', 'Tipo Equipo': 'Dolly', 'Operacion Cedula': 'VEND CENTRO'},
+        {'Equipo Motriz': '40999', 'Tipo Equipo': 'Remolque', 'Operacion Cedula': 'POR ASIGNAR'},
+    ])
+    df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=_period(),
+                                log_callback=lambda *_a, **_k: None).aggregate()
+    por_op = df_op.set_index('Operacion Cedula')
+    assert por_op.loc['VEND CENTRO', 'Remolques Titulares'] == 2
+    assert por_op.loc['VEND CENTRO', 'Dollies Titulares'] == 1
+    assert por_op.loc['VEND CENTRO', 'Motrices Titulares'] == 1
+    assert por_op.loc['POR ASIGNAR', 'Remolques Titulares'] == 1
+    assert por_op.loc['POR ASIGNAR', 'Motrices Titulares'] == 0
+    assert por_op.loc['POR ASIGNAR', 'Tipo de Unidad'] == ''
+    # Todos los arrastres, una sola vez
+    assert (df_op['Remolques Titulares'] + df_op['Dollies Titulares']).sum() == 4
 
 
 # ---------- Atribucion dia-por-dia (df_detalle_opcedula) ----------
@@ -221,6 +293,56 @@ def test_objetivos_consolidados_al_cierre() -> None:
     assert fila['Cumplimiento KM %'] == 18.33
     # Viajes total = 55; Cump = 55 / 300 = 18.33
     assert fila['Cumplimiento Viajes %'] == 18.33
+
+
+def test_objetivo_dia_por_dia_con_detalle() -> None:
+    """v0.7.0: cada unidad-dia aporta el objetivo de la OpCedula de ESE dia.
+
+    Corte 10/06 (dias_corrientes=10, dias_restantes=20). Objetivo diario:
+    VEND CENTRO 100, VEND NORTE 50, OLD OP (retirada) 30.
+      C070: 10 dias en VEND CENTRO                    -> 1000 a VEND CENTRO
+      C071: 4 dias VEND NORTE + 6 dias VEND CENTRO    -> 200 a NORTE, 600 a CENTRO
+      C100: 10 dias VEND NORTE                        -> 500 a NORTE
+      C101: 3 dias OLD OP + 7 dias VEND NORTE         -> 90 a Pendiente, 350 a NORTE
+    Complemento = obj diario × titulares × 20 dias restantes.
+    """
+    ident = {'Gerencia': 'CUE', 'Operacion': 'VEND', 'Tipo de Unidad': 'FULL', 'Estatus': 'Operando'}
+    df_eq = _equipos([
+        {'Equipo Motriz': 'C070', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND CENTRO', **ident},
+        {'Equipo Motriz': 'C071', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND CENTRO', **ident},
+        {'Equipo Motriz': 'C100', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND NORTE', **ident},
+        {'Equipo Motriz': 'C101', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'VEND NORTE', **ident},
+    ])
+    df_obj = _objetivo([
+        {'Equipo Motriz': 'C070', 'Operación cedula': 'VEND CENTRO', 'Objetivo KM Corte': 1000, 'Objetivo Viajes Corte': 10},
+        {'Equipo Motriz': 'C071', 'Operación cedula': 'VEND NORTE', 'Objetivo KM Corte': 200, 'Objetivo Viajes Corte': 4},
+        {'Equipo Motriz': 'C071', 'Operación cedula': 'VEND CENTRO', 'Objetivo KM Corte': 600, 'Objetivo Viajes Corte': 6},
+        {'Equipo Motriz': 'C100', 'Operación cedula': 'VEND NORTE', 'Objetivo KM Corte': 500, 'Objetivo Viajes Corte': 10},
+        {'Equipo Motriz': 'C101', 'Operación cedula': 'OLD OP', 'Objetivo KM Corte': 90, 'Objetivo Viajes Corte': 3},
+        {'Equipo Motriz': 'C101', 'Operación cedula': 'VEND NORTE', 'Objetivo KM Corte': 350, 'Objetivo Viajes Corte': 7},
+    ])
+    obj = {
+        'VEND CENTRO': {'Objetivo KM Diario': 100, 'Objetivo Viajes Diario': 1},
+        'VEND NORTE': {'Objetivo KM Diario': 50, 'Objetivo Viajes Diario': 1},
+        'OLD OP': {'Objetivo KM Diario': 30, 'Objetivo Viajes Diario': 1},
+    }
+    df_op = OpcedulaAggregator(df_eq, obj_mapping=obj, period=_period('2026-06-10'),
+                                df_detalle_opcedula=_detalle([]),
+                                df_objetivo_opcedula=df_obj,
+                                log_callback=lambda *_a, **_k: None).aggregate()
+    por_op = df_op.set_index('Operacion Cedula')
+
+    assert por_op.loc['VEND CENTRO', 'Objetivo KM Corte'] == 1600  # antes: 100×2×10 = 2000
+    assert por_op.loc['VEND CENTRO', 'Complemento KM Objetivo'] == 4000  # 100 × 2 × 20
+    assert por_op.loc['VEND CENTRO', 'Objetivo KM'] == 5600
+    assert por_op.loc['VEND NORTE', 'Objetivo KM Corte'] == 1050  # antes: 50×2×10 = 1000
+    assert por_op.loc['VEND NORTE', 'Objetivo KM'] == 3050
+    assert por_op.loc['VEND NORTE', 'Objetivo Viajes Corte'] == 21
+    # La OpCedula retirada aporta su objetivo a 'Pendiente' (sin complemento)
+    assert por_op.loc['Pendiente', 'Objetivo KM Corte'] == 90
+    assert por_op.loc['Pendiente', 'Objetivo KM'] == 90
+    # Suma de cortes == suma de objetivos dia por dia de todas las unidades
+    assert df_op['Objetivo KM Corte'].sum() == df_obj['Objetivo KM Corte'].sum()
 
 
 # ---------- % Operativo y promedios ----------
@@ -468,6 +590,66 @@ def test_potencial_km_es_diferencia_entre_tendencia_y_real() -> None:
     assert fila['Potencial Viajes'] == pytest.approx(fila['Tendencia Viajes'] - fila['Viajes'], abs=0.01)
     fila_op = df_op.iloc[0]
     assert fila_op['Potencial KM'] == pytest.approx(fila_op['Tendencia KM'] - fila_op['KM Total'], abs=0.01)
+
+
+def test_tendencia_por_operacion_es_km_diario_mas_potencial_de_titulares() -> None:
+    """v0.7.0: Tendencia de la OpCedula = KM atribuido dia por dia a ella +
+    Potencial de sus titulares (antes: KM del mes completo de los titulares).
+
+    L7 es titular de MARS pero hizo 641 de sus 900 km bajo AXION; L8 es
+    titular de AXION. Corte 10/06 (20 dias restantes, peso_evidencia=1).
+      Promedio MARS = 259/3 = 86.3333 -> Potencial L7 = 20 × 86.3333 = 1726.67
+      Promedio AXION = 1341/17 = 78.8824 -> Potencial L8 = 20 × 78.8824 = 1577.65
+    """
+    df_eq = _equipos([
+        {'Equipo Motriz': 'L7', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'MARS CAMIONETA',
+         'Gerencia': 'CUE', 'Operacion': 'MARS', 'Circuito': 'CAMIONETA', 'Tipo de Unidad': 'CAMIONETA',
+         'Estatus': 'Operando', 'KM Total': 900, 'Viajes': 40, '% Operativo': 100.0},
+        {'Equipo Motriz': 'L8', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'AXION LOG CAMIONETA',
+         'Gerencia': 'CUE', 'Operacion': 'AXION', 'Circuito': 'LOG', 'Tipo de Unidad': 'CAMIONETA',
+         'Estatus': 'Operando', 'KM Total': 700, 'Viajes': 35, '% Operativo': 100.0},
+    ])
+    df_detalle = _detalle([
+        {'Equipo Motriz': 'L7', 'Operación cedula': 'AXION LOG CAMIONETA', 'KM Total': 641, 'Viajes': 28, 'Dias Activo': 7},
+        {'Equipo Motriz': 'L7', 'Operación cedula': 'MARS CAMIONETA', 'KM Total': 259, 'Viajes': 12, 'Dias Activo': 3},
+        {'Equipo Motriz': 'L8', 'Operación cedula': 'AXION LOG CAMIONETA', 'KM Total': 700, 'Viajes': 35, 'Dias Activo': 10},
+    ])
+    period = _period('2026-06-10')
+    df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=period,
+                                df_detalle_opcedula=df_detalle,
+                                log_callback=lambda *_a, **_k: None).aggregate()
+    post_calcular_tendencia(df_eq, df_op, period)
+    por_op = df_op.set_index('Operacion Cedula')
+
+    assert por_op.loc['MARS CAMIONETA', 'Tendencia KM'] == pytest.approx(259 + 1726.67, abs=0.01)
+    assert por_op.loc['AXION LOG CAMIONETA', 'Tendencia KM'] == pytest.approx(1341 + 1577.65, abs=0.01)
+    assert por_op.loc['MARS CAMIONETA', 'Potencial KM'] == pytest.approx(1726.67, abs=0.01)
+    # El total de la flota no cambia: Σ filas == Σ equipos
+    assert df_op['Tendencia KM'].sum() == pytest.approx(df_eq['Tendencia KM'].sum(), abs=0.02)
+
+
+def test_por_asignar_no_proyecta_aunque_su_fila_tenga_promedio() -> None:
+    """v0.7.0: la fila 'POR ASIGNAR <tipo>' tiene KM dia por dia (y promedio),
+    pero una unidad Por Asignar sigue sin proyectar: Tendencia = KM real."""
+    df_eq = _equipos([
+        {'Equipo Motriz': 'T401', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'POR ASIGNAR SENCILLO',
+         'Estatus': 'Sin Asignacion', 'KM Total': 4264, 'Viajes': 50, '% Operativo': 93.33},
+    ])
+    df_detalle = _detalle([
+        {'Equipo Motriz': 'T401', 'Operación cedula': 'POR ASIGNAR SENCILLO',
+         'KM Total': 4264, 'Viajes': 50, 'Dias Activo': 28},
+    ])
+    period = _period('2026-06-10')
+    df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=period,
+                                df_detalle_opcedula=df_detalle,
+                                log_callback=lambda *_a, **_k: None).aggregate()
+    assert df_op.iloc[0]['Promedio KM dia unidad'] > 0
+
+    post_calcular_tendencia(df_eq, df_op, period)
+
+    assert df_eq.iloc[0]['Potencial KM'] == 0.0
+    assert df_eq.iloc[0]['Tendencia KM'] == 4264
+    assert df_op.iloc[0]['Tendencia KM'] == 4264
 
 
 # ---------- Schema ----------

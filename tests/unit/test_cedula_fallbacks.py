@@ -15,6 +15,7 @@ respaldo local + hoja de inconsistencias":
    - si alguna está presente, ffill/bfill por Unidades + "Sin Info" para lo
      que sigue vacío.
 5. Acentos/Ñ en columnas categóricas -> texto sin acentos tras el fallback.
+6. Tipo de Unidad sin TRACTOCAMION (v0.7.0): se homologa antes de calcular.
 """
 
 from __future__ import annotations
@@ -78,9 +79,10 @@ def test_tipo_unidad_inferido_de_historico_de_viajes() -> None:
 
     result = proc._apply_cedula_fallbacks(df_cedulas, df_trips)
 
-    assert result.iloc[0]['Tipo de Unidad'] == 'TRACTOCAMION FULL'
+    # Vocabulario de la cedula: ClaveCategoria FULL -> 'FULL' (sin TRACTOCAMION, v0.7.0)
+    assert result.iloc[0]['Tipo de Unidad'] == 'FULL'
     motivos = {(i['Campo'], i['Valor Aplicado'], i['Motivo']) for i in proc._inconsistencias}
-    assert ('Tipo de Unidad', 'TRACTOCAMION FULL', 'Tipo de Unidad inferido de histórico de viajes') in motivos
+    assert ('Tipo de Unidad', 'FULL', 'Tipo de Unidad inferido de histórico de viajes') in motivos
 
 
 # ---------- 3. Tipo de Unidad por prefijo de numero economico ----------
@@ -177,7 +179,7 @@ def test_normaliza_acentos_en_columnas_categoricas() -> None:
         {
             'Unidades': 'C999', 'Fecha Cedula_dt': pd.Timestamp('2026-06-01'),
             'Gerencia': 'Gerencia Cuernavaca Súr', 'Operación': 'Distribución',
-            'Tipo de Unidad': 'Tractocamión Full', 'Circuito': 'Dedicado',
+            'Tipo de Unidad': 'Tórthon RF', 'Circuito': 'Dedicado',
             'Operando': 'Gestoría',
         },
     ])
@@ -188,6 +190,31 @@ def test_normaliza_acentos_en_columnas_categoricas() -> None:
     fila = result.iloc[0]
     assert fila['Gerencia'] == 'Gerencia Cuernavaca Sur'
     assert fila['Operación'] == 'Distribucion'
-    assert fila['Tipo de Unidad'] == 'Tractocamion Full'
+    assert fila['Tipo de Unidad'] == 'Torthon RF'
     assert fila['Circuito'] == 'Dedicado'
     assert fila['Operando'] == 'Gestoria'
+
+
+# ---------- 6. Tipo de Unidad sin TRACTOCAMION (v0.7.0) ----------
+
+def test_tipo_unidad_tractocamion_se_homologa_antes_de_calcular() -> None:
+    """No existe TRACTOCAMION: 'TRACTOCAMION <tipo>' -> <tipo>, solo -> SENCILLO."""
+    base = {'Fecha Cedula_dt': pd.Timestamp('2026-06-01'), 'Gerencia': 'CUE',
+            'Operación': 'VEND', 'Circuito': 'DEDICADO', 'Operando': 'Operando'}
+    df_cedulas = pd.DataFrame([
+        {**base, 'Unidades': 'T001', 'Tipo de Unidad': 'TRACTOCAMION'},
+        {**base, 'Unidades': 'T002', 'Tipo de Unidad': 'TRACTOCAMION FULL'},
+        {**base, 'Unidades': 'T003', 'Tipo de Unidad': 'Tractocamión Patio'},
+        {**base, 'Unidades': 'T004', 'Tipo de Unidad': 'SENCILLO'},
+    ])
+    proc = _processor()
+
+    result = proc._apply_cedula_fallbacks(df_cedulas, pd.DataFrame())
+
+    tipos = result.set_index('Unidades')['Tipo de Unidad']
+    assert tipos.to_dict() == {'T001': 'SENCILLO', 'T002': 'FULL', 'T003': 'PATIO', 'T004': 'SENCILLO'}
+    homologados = {(i['Unidad'], i['Valor Original'], i['Valor Aplicado']) for i in proc._inconsistencias
+                   if i['Motivo'] == 'Tipo de Unidad homologado (no existe TRACTOCAMION)'}
+    assert homologados == {('T001', 'TRACTOCAMION', 'SENCILLO'),
+                           ('T002', 'TRACTOCAMION FULL', 'FULL'),
+                           ('T003', 'Tractocamion Patio', 'PATIO')}

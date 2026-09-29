@@ -13,7 +13,8 @@ contrato del DataFrame de salida esta en `EQUIPO_OUTPUT_COLS`.
 Reglas clave (ver `docs/v0.5.0-design.md`):
 - Universo = union de Unidades en cedula + equipos en viajes no-comodato.
 - Tipo Equipo se infiere de `Tipo de Unidad` de la cedula (motriz/remolque/dolly).
-- Asignacion vigente motriz = ultima cedula del periodo (o POR ASIGNAR).
+- Asignacion vigente motriz = ultima cedula del periodo (o POR ASIGNAR). Sin
+  cedula en el periodo: POR ASIGNAR <tipo de su ultimo viaje> (v0.7.0).
 - Asignacion vigente arrastre = motriz dominante (mas viajes compartidos).
 - Status BD canonicos -> 8 sub-status; resto -> `Dias Otros Status`.
 - Sin Asignacion BD -> `Dias Sin Asignacion`.
@@ -24,6 +25,7 @@ Reglas clave (ver `docs/v0.5.0-design.md`):
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
@@ -55,15 +57,50 @@ def normalize_text(value: str) -> str:
 
 # ---------- Mapeo de ClaveCategoria (viajes) -> Tipo de Unidad (cedula) ----------
 
+# Mismo vocabulario que la cedula (Excel y BD) y el archivo de objetivos: en la
+# cedula no existe "TRACTOCAMION" (v0.7.0). Antes producia 'TRACTOCAMION
+# SENCILLO' para unidades sin cedula, y 'POR ASIGNAR TRACTOCAMION SENCILLO'
+# quedaba como una operacion distinta de 'POR ASIGNAR SENCILLO'.
 CLAVE_CATEGORIA_A_TIPO_UNIDAD = {
     'CAMIONETA': 'CAMIONETA',
-    'SENCILLO': 'TRACTOCAMION SENCILLO',
-    'FULL': 'TRACTOCAMION FULL',
+    'SENCILLO': 'SENCILLO',
+    'FULL': 'FULL',
     'TORTHON': 'TORTHON',
     'THORTON': 'TORTHON',
-    'PATIO': 'TRACTOCAMION PATIO',
-    'DOBLE': 'TRACTOCAMION DOBLE',
+    'PATIO': 'PATIO',
+    'DOBLE': 'DOBLE',
 }
+
+_TRACTOCAMION_RE = re.compile(r'\bTRACTOCAMION\b')
+
+
+def normalizar_tipo_unidad(valor):
+    """Homologa `Tipo de Unidad` al vocabulario de la cedula (Beto, 2026-09-29).
+
+    No existe "TRACTOCAMION": el tipo es SENCILLO, FULL, PATIO, etc.
+    "TRACTOCAMION <tipo>" se reduce a <tipo> y "TRACTOCAMION" solo se corrige
+    a "SENCILLO". Cualquier otro valor (y NaN/vacio) se devuelve sin cambios.
+    """
+    if not isinstance(valor, str) or not valor.strip():
+        return valor
+    texto = normalize_text(valor).strip().upper()
+    if not _TRACTOCAMION_RE.search(texto):
+        return valor
+    resto = ' '.join(_TRACTOCAMION_RE.sub(' ', texto).split())
+    return resto or 'SENCILLO'
+
+
+def normalizar_opcedula(clave):
+    """Mismo vocabulario para una clave `Operación Cedula` ya en mayusculas.
+
+    Para el archivo de objetivos: su clave debe seguir empatando con la
+    OpCedula que se arma desde la cedula ya homologada.
+    'X TRACTOCAMION FULL' -> 'X FULL'; 'X TRACTOCAMION' -> 'X SENCILLO'.
+    """
+    if not isinstance(clave, str) or not _TRACTOCAMION_RE.search(clave):
+        return clave
+    clave = re.sub(r'\bTRACTOCAMION\s*$', 'SENCILLO', clave.strip())
+    return ' '.join(_TRACTOCAMION_RE.sub(' ', clave).split())
 
 # ---------- Catalogos de tipo de equipo ----------
 
@@ -196,13 +233,19 @@ class AsignacionVigente:
 
     @classmethod
     def pendiente(cls, tipo_unidad: str = '') -> "AsignacionVigente":
-        """Asignacion para equipos egresados o nunca asignados."""
+        """Asignacion para equipos egresados o nunca asignados.
+
+        `operacion_cedula` en mayusculas, igual que la OpCedula que el
+        procesador calcula para los viajes del dia: la fila 'POR ASIGNAR
+        <tipo>' de Por Operacion junta titulares y utilizadas por esa clave.
+        """
+        tipo_unidad = tipo_unidad if isinstance(tipo_unidad, str) else ''
         return cls(
             gerencia='Pendiente',
             operacion='POR ASIGNAR',
             tipo_unidad=tipo_unidad,
             circuito='POR ASIGNAR',
-            operacion_cedula=f'POR ASIGNAR {tipo_unidad}'.strip(),
+            operacion_cedula=f'POR ASIGNAR {tipo_unidad}'.strip().upper(),
             estatus='Sin Asignacion',
         )
 
@@ -322,6 +365,37 @@ class EquipmentAggregator:
             return pd.DataFrame(columns=cols)
         return pd.DataFrame(registros)[cols]
 
+    def aggregate_objetivo_opcedula(self) -> pd.DataFrame:
+        """Objetivo de corte por motriz x OpCedula del dia, para Por Operacion (v0.7.0).
+
+        Mismo recorrido dia por dia que `_calcular_objetivos` (comparten
+        `_objetivo_corte_por_opcedula`): cada dia asignado del rango corriente
+        aporta el Objetivo Diario de la OpCedula que la unidad tenia ESE dia,
+        sin importar status. Por construccion, la suma cuadra con el
+        `Objetivo KM Corte` de Por Equipo.
+        """
+        cols = ['Equipo Motriz', 'Operación cedula', 'Objetivo KM Corte', 'Objetivo Viajes Corte']
+        if self.df_cedulas.empty:
+            return pd.DataFrame(columns=cols)
+
+        tipos = self._tipos_por_equipo()
+        unidades = set(self.df_cedulas['Unidades'].astype(str).str.strip().str.upper())
+        registros = []
+        for equipo in sorted(unidades):
+            if tipos.get(equipo, 'Motriz') != 'Motriz':
+                continue
+            corte = self._objetivo_corte_por_opcedula(self._cedulas_del_equipo(equipo))
+            for opcedula, (obj_km, obj_viajes) in corte.items():
+                registros.append({
+                    'Equipo Motriz': equipo,
+                    'Operación cedula': opcedula,
+                    'Objetivo KM Corte': obj_km,
+                    'Objetivo Viajes Corte': obj_viajes,
+                })
+        if not registros:
+            return pd.DataFrame(columns=cols)
+        return pd.DataFrame(registros)[cols]
+
     # ---------- Helpers de universo y tipo ----------
 
     def _universo_equipos(self) -> set[str]:
@@ -405,7 +479,7 @@ class EquipmentAggregator:
         ced = self._cedulas_del_equipo(equipo)
         viajes = self._viajes_del_equipo(equipo)
 
-        asignacion = self._asignacion_vigente_motriz(ced)
+        asignacion = self._asignacion_vigente_motriz(ced, equipo)
         dias = self._contar_dias_motriz(ced)
         dias['Dias Activo'] = self._dias_activo(viajes)
         op_metrics = self._metricas_operativas(viajes)
@@ -431,7 +505,7 @@ class EquipmentAggregator:
 
         if motriz_dom:
             ced_motriz_dom = self._cedulas_del_equipo(motriz_dom)
-            asignacion = self._asignacion_vigente_motriz(ced_motriz_dom)
+            asignacion = self._asignacion_vigente_motriz(ced_motriz_dom, motriz_dom)
             dias_motriz_asignado = self._contar_dias_motriz(ced_motriz_dom)['Dias Asignado']
         else:
             asignacion = AsignacionVigente.pendiente()
@@ -498,14 +572,20 @@ class EquipmentAggregator:
                 mask |= (self.df_trips_validos[col].astype(str).str.strip().str.upper() == equipo)
         return self.df_trips_validos[mask]
 
-    def _asignacion_vigente_motriz(self, ced: pd.DataFrame) -> AsignacionVigente:
+    def _asignacion_vigente_motriz(self, ced: pd.DataFrame,
+                                   equipo: Optional[str] = None) -> AsignacionVigente:
         """Foto de la asignacion en el ultimo dia de cedula del periodo.
 
         Si la cedula del ultimo dia es Sin Asignacion (egreso o nunca asignado)
         -> AsignacionVigente.pendiente().
+
+        Sin cedula en todo el periodo (v0.7.0): su ultima asignacion es la que
+        recibieron sus viajes del ultimo dia — 'POR ASIGNAR <tipo>', con el
+        tipo que el procesador les dio desde ClaveCategoria. Asi la unidad es
+        titular de la misma fila de Por Operacion donde cuenta como utilizada.
         """
         if ced.empty:
-            return AsignacionVigente.pendiente()
+            return self._asignacion_por_ultimo_viaje(equipo)
         ultima = ced.sort_values('Fecha Cedula_dt').iloc[-1]
         # Si el ultimo dia es Sin Asignacion, conservamos tipo_unidad pero marcamos POR ASIGNAR
         if categoria_status(ultima.get('Operando', '')) == 'Sin Asignacion':
@@ -521,6 +601,16 @@ class EquipmentAggregator:
             operacion_cedula=_calcular_opcedula(op, ci, tu, self.special_circuits),
             estatus=ultima.get('Operando', ''),
         )
+
+    def _asignacion_por_ultimo_viaje(self, equipo: Optional[str]) -> AsignacionVigente:
+        """POR ASIGNAR con el `Tipo de Unidad` del ultimo viaje del equipo (sin cedula)."""
+        viajes = self._viajes_del_equipo(equipo) if equipo else self.df_trips_validos.iloc[0:0]
+        if viajes.empty or 'Tipo de Unidad' not in viajes.columns or 'Fecha creación' not in viajes.columns:
+            return AsignacionVigente.pendiente()
+        fechas = pd.to_datetime(viajes['Fecha creación'], errors='coerce')
+        if fechas.isna().all():
+            return AsignacionVigente.pendiente()
+        return AsignacionVigente.pendiente(viajes.loc[fechas.idxmax(), 'Tipo de Unidad'])
 
     def _estatus_vigente_arrastre(self, asignacion: AsignacionVigente,
                                    viajes: pd.DataFrame,
@@ -640,6 +730,37 @@ class EquipmentAggregator:
             'Densidad Viaje': round(densidad, 2),
         }
 
+    def _objetivo_corte_por_opcedula(self, ced: pd.DataFrame) -> Dict[str, list]:
+        """{OpCedula del dia: [Σ Objetivo KM Diario, Σ Objetivo Viajes Diario]}.
+
+        Recorre los dias del rango corriente: cada dia asignado (no Sin
+        Asignacion) aporta el objetivo diario de la OpCedula que la cedula le
+        da ESE dia, sin importar status. Dias sin cedula o sin objetivo
+        registrado no aportan.
+        """
+        corte: Dict[str, list] = {}
+        if ced.empty:
+            return corte
+        by_date = {row['Fecha Cedula_dt'].normalize(): row for _, row in ced.iterrows()}
+        for fecha in self.period.rango_corriente():
+            row = by_date.get(fecha.normalize())
+            if row is None:
+                continue
+            categoria = categoria_status(row.get('Operando', '') or '')
+            if categoria == 'Sin Asignacion':
+                continue
+            op = row.get('Operación', '')
+            ci = row.get('Circuito', '')
+            tu = row.get('Tipo de Unidad', '')
+            opcedula = _calcular_opcedula(op, ci, tu, self.special_circuits)
+            obj_entry = self.obj_mapping.get(opcedula)
+            if not obj_entry:
+                continue
+            acumulado = corte.setdefault(opcedula, [0.0, 0.0])
+            acumulado[0] += float(obj_entry.get('Objetivo KM Diario', 0) or 0)
+            acumulado[1] += float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
+        return corte
+
     def _calcular_objetivos(self, ced: pd.DataFrame,
                             asignacion: AsignacionVigente) -> Dict[str, float]:
         """Objetivo proyectado al CIERRE del mes (corte + futuro).
@@ -662,27 +783,9 @@ class EquipmentAggregator:
                     'Cump KM %': None, 'Cump Viajes %': None}
 
         # --- Obj corte: dias asignados en el rango ---
-        rango = self.period.rango_corriente()
-        by_date = {row['Fecha Cedula_dt'].normalize(): row for _, row in ced.iterrows()}
-
-        obj_km_corte = 0.0
-        obj_v_corte = 0.0
-        for fecha in rango:
-            row = by_date.get(fecha.normalize())
-            if row is None:
-                continue
-            categoria = categoria_status(row.get('Operando', '') or '')
-            if categoria == 'Sin Asignacion':
-                continue
-            op = row.get('Operación', '')
-            ci = row.get('Circuito', '')
-            tu = row.get('Tipo de Unidad', '')
-            opcedula = _calcular_opcedula(op, ci, tu, self.special_circuits)
-            obj_entry = self.obj_mapping.get(opcedula)
-            if not obj_entry:
-                continue
-            obj_km_corte += float(obj_entry.get('Objetivo KM Diario', 0) or 0)
-            obj_v_corte += float(obj_entry.get('Objetivo Viajes Diario', 0) or 0)
+        corte = self._objetivo_corte_por_opcedula(ced)
+        obj_km_corte = sum(obj_km for obj_km, _ in corte.values())
+        obj_v_corte = sum(obj_v for _, obj_v in corte.values())
 
         # --- Obj futuro: asignacion vigente × dias restantes mes ---
         obj_entry_vig = self.obj_mapping.get(asignacion.operacion_cedula, {})

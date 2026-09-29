@@ -16,10 +16,14 @@ import pandas as pd
 import pytest
 
 from kpi_generator.domain.equipment import (
+    CLAVE_CATEGORIA_A_TIPO_UNIDAD,
     EQUIPO_OUTPUT_COLS,
+    AsignacionVigente,
     EquipmentAggregator,
     categoria_status,
     clasificar_tipo_equipo,
+    normalizar_opcedula,
+    normalizar_tipo_unidad,
     normalize_text,
 )
 from kpi_generator.domain.period import PeriodContext
@@ -144,6 +148,49 @@ def test_normalize_text(value: str, esperado: str) -> None:
     assert normalize_text(value) == esperado
 
 
+# ---------- Vocabulario de Tipo de Unidad (v0.7.0: no existe TRACTOCAMION) ----------
+
+@pytest.mark.parametrize("valor,esperado", [
+    ('TRACTOCAMION', 'SENCILLO'),
+    ('TRACTOCAMION SENCILLO', 'SENCILLO'),
+    ('TRACTOCAMION FULL', 'FULL'),
+    ('Tractocamión Patio', 'PATIO'),
+    ('  tractocamion  ', 'SENCILLO'),
+    ('SENCILLO', 'SENCILLO'),
+    ('TORTHON RF', 'TORTHON RF'),
+    ('Camioneta', 'Camioneta'),  # sin TRACTOCAMION: sin cambios
+    ('', ''),
+])
+def test_normalizar_tipo_unidad(valor: str, esperado: str) -> None:
+    assert normalizar_tipo_unidad(valor) == esperado
+
+
+def test_normalizar_tipo_unidad_con_nan_no_truena() -> None:
+    assert pd.isna(normalizar_tipo_unidad(float('nan')))
+
+
+@pytest.mark.parametrize("clave,esperado", [
+    ('CUERNAVACA TRACTOCAMION FULL', 'CUERNAVACA FULL'),
+    ('CUERNAVACA TRACTOCAMION', 'CUERNAVACA SENCILLO'),
+    ('POR ASIGNAR TRACTOCAMION SENCILLO', 'POR ASIGNAR SENCILLO'),
+    ('STB SENCILLO', 'STB SENCILLO'),
+])
+def test_normalizar_opcedula(clave: str, esperado: str) -> None:
+    assert normalizar_opcedula(clave) == esperado
+
+
+def test_clave_categoria_usa_vocabulario_de_cedula() -> None:
+    assert not any('TRACTOCAMION' in tipo for tipo in CLAVE_CATEGORIA_A_TIPO_UNIDAD.values())
+    assert CLAVE_CATEGORIA_A_TIPO_UNIDAD['SENCILLO'] == 'SENCILLO'
+
+
+def test_pendiente_opcedula_en_mayusculas() -> None:
+    """La OpCedula POR ASIGNAR empata con la que el procesador da a los viajes."""
+    assert AsignacionVigente.pendiente('Sencillo').operacion_cedula == 'POR ASIGNAR SENCILLO'
+    assert AsignacionVigente.pendiente().operacion_cedula == 'POR ASIGNAR'
+    assert AsignacionVigente.pendiente(float('nan')).operacion_cedula == 'POR ASIGNAR'
+
+
 # ---------- Asignacion vigente motriz ----------
 
 def test_asignacion_vigente_ultimo_dia() -> None:
@@ -198,6 +245,36 @@ def test_phantom_sin_cedula_por_asignar() -> None:
     assert fila['Dias Asignado'] == 0
     assert fila['Dias Sin Asignacion'] == 5  # corte = dia 5
     assert fila['Dias Activo'] == 1
+
+
+def test_sin_cedula_titular_de_la_asignacion_de_su_ultimo_viaje() -> None:
+    """v0.7.0: sin cedula en el periodo, la foto es la asignacion de su ultimo
+    dia con viaje ('POR ASIGNAR <tipo>'), la misma fila donde cuenta como
+    utilizada (caso real FL27/UT002)."""
+    trips = _trips([
+        {'Equipo Motriz': 'FL27', 'Fecha creación': '2026-06-02', 'Número de Viaje': 1,
+         'ClaveCategoria': 'SENCILLO', 'Tipo de Unidad': 'SENCILLO',
+         'Operación cedula': 'POR ASIGNAR SENCILLO'},
+        {'Equipo Motriz': 'FL27', 'Fecha creación': '2026-06-04', 'Número de Viaje': 2,
+         'ClaveCategoria': 'SENCILLO', 'Tipo de Unidad': 'SENCILLO',
+         'Operación cedula': 'POR ASIGNAR SENCILLO'},
+    ])
+    fila = _agg(_ced([]), trips).aggregate().iloc[0]
+    assert fila['Operacion Cedula'] == 'POR ASIGNAR SENCILLO'
+    assert fila['Tipo de Unidad'] == 'SENCILLO'
+    assert fila['Gerencia'] == 'Pendiente'
+    assert fila['Estatus'] == 'Sin Asignacion'
+
+
+def test_arrastre_de_motriz_sin_cedula_hereda_su_foto() -> None:
+    trips = _trips([
+        {'Equipo Motriz': 'UT002', 'Equipo Remolque 1': '40777', 'Fecha creación': '2026-06-03',
+         'Número de Viaje': 1, 'ClaveCategoria': 'CAMIONETA', 'Tipo de Unidad': 'CAMIONETA'},
+    ])
+    df = _agg(_ced([]), trips).aggregate()
+    fila = df[df['Equipo Motriz'] == '40777'].iloc[0]
+    assert fila['Tipo Equipo'] == 'Remolque'
+    assert fila['Operacion Cedula'] == 'POR ASIGNAR CAMIONETA'
 
 
 # ---------- Dias por status ----------
@@ -327,6 +404,50 @@ def test_objetivo_prorrateado_mezcla_opcedulas() -> None:
     assert fila['Objetivo Viajes Corte'] == 6
     assert fila['Complemento Viajes Objetivo'] == 26
     assert fila['Objetivo Viajes Total'] == 32
+
+
+def test_aggregate_objetivo_opcedula_dia_por_dia() -> None:
+    """v0.7.0: el objetivo de corte se reparte por la OpCedula de cada dia y su
+    suma cuadra con el `Objetivo KM Corte` de Por Equipo. Dias Sin Asignacion
+    no aportan; los arrastres no tienen objetivo."""
+    ced = _ced([
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-02', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'CENTRO',
+         'Operando': 'Taller'},  # Taller sigue aportando
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-03', 'Gerencia': 'MEX',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'NORTE',
+         'Operando': 'Operando'},
+        {'Unidades': 'C070', 'Fecha Cedula_dt': '2026-06-04', 'Gerencia': 'MEX',
+         'Operación': 'VEND', 'Tipo de Unidad': 'FULL', 'Circuito': 'NORTE',
+         'Operando': 'Sin Asignacion'},  # no aporta
+        {'Unidades': 'R100', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'CUE',
+         'Operación': 'VEND', 'Tipo de Unidad': 'REMOLQUE', 'Circuito': 'CENTRO',
+         'Operando': 'Operando'},  # arrastre: fuera del detalle
+    ])
+    obj = {
+        'VEND CENTRO': {'Objetivo KM Diario': 100, 'Objetivo Viajes Diario': 2},
+        'VEND NORTE': {'Objetivo KM Diario': 10, 'Objetivo Viajes Diario': 1},
+    }
+    agg = _agg(ced, _trips([]), obj_mapping=obj, corte='2026-06-04')
+    df_obj = agg.aggregate_objetivo_opcedula()
+
+    por_op = df_obj.set_index('Operación cedula')
+    assert set(df_obj['Equipo Motriz']) == {'C070'}
+    assert por_op.loc['VEND CENTRO', 'Objetivo KM Corte'] == 200
+    assert por_op.loc['VEND CENTRO', 'Objetivo Viajes Corte'] == 4
+    assert por_op.loc['VEND NORTE', 'Objetivo KM Corte'] == 10
+    motriz = agg.aggregate().set_index('Equipo Motriz').loc['C070']
+    assert df_obj['Objetivo KM Corte'].sum() == motriz['Objetivo KM Corte'] == 210
+
+
+def test_aggregate_objetivo_opcedula_sin_cedula_vacio_con_schema() -> None:
+    df_obj = _agg(_ced([]), _trips([])).aggregate_objetivo_opcedula()
+    assert df_obj.empty
+    assert list(df_obj.columns) == ['Equipo Motriz', 'Operación cedula',
+                                    'Objetivo KM Corte', 'Objetivo Viajes Corte']
 
 
 def test_objetivo_dia_sin_objetivo_aporta_cero() -> None:

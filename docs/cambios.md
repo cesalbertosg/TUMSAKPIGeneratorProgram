@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.7.0 — 2026-09-29 (Por Operación día por día: objetivo, POR ASIGNAR por tipo, arrastres)
+
+Principio rector validado por Beto: **TODOS LOS CÁLCULOS SE ASIGNAN DIARIAMENTE**
+(registrado en `CLAUDE.md` y en ContextoMaestro `decisiones.md`). Cada unidad-día
+aporta a la Operación Cédula que tenía ESE día; solo la foto del corte (titulares y
+su status) y la proyección a futuro usan la asignación vigente. Objetivo del cambio:
+que las sumas de "Por Operación" (objetivo, KM cargado/vacío/total, viajes, equipos)
+incluyan a los Por Asignar y Pendiente y cuadren con "Por Equipo" y "Viajes".
+
+Antes, KM/viajes/equipos ya cuadraban (fila consolidada "Pendiente", v0.6.0), pero el
+**objetivo no**: la fila Pendiente siempre traía 0 y las operaciones reales usaban
+`objetivo diario × titulares al corte × días del mes`, ignorando altas, bajas y
+reasignaciones a mitad de mes (cierre de agosto: +21,841 km vs Por Equipo).
+
+### Por Operación (`domain/opcedula.py`)
+
+- **Objetivo día por día**: `Objetivo KM/Viajes Corte` = Σ objetivo diario de cada
+  unidad-día asignada a la OpCédula ESE día. Insumo nuevo
+  `EquipmentAggregator.aggregate_objetivo_opcedula()`, que comparte el recorrido
+  diario con `_calcular_objetivos` de Por Equipo (`_objetivo_corte_por_opcedula`):
+  cuadran por construcción. El complemento sigue siendo `objetivo diario ×
+  titulares × días restantes` (proyección).
+- **Filas**: una por cada `POR ASIGNAR <tipo>` (Gerencia `Pendiente`, Tipo de Unidad
+  = tipo) y `Pendiente` solo para lo atribuido día por día a una OpCédula retirada del
+  catálogo. Orden: vigentes, POR ASIGNAR, Pendiente. El Resumen no cambia de forma
+  (todas siguen en Gerencia `Pendiente`).
+- **Tendencia por operación** = KM Total de la fila (día por día) + Σ Potencial de
+  sus titulares (antes sumaba el KM del mes completo de los titulares). Por Asignar
+  no proyecta (regla ahora explícita: su fila sí tiene promedio). Total sin cambios.
+- **Columnas nuevas al final**: `Remolques Titulares`, `Dollies Titulares` (foto de
+  arrastres por la vigente de su motriz dominante; Σ = arrastres de Por Equipo).
+- **Fix**: el status `Puesto a Punto` (minúscula) caía en `Otros Status`; ahora se
+  cuenta con `categoria_status`, igual que Por Equipo.
+- Sin cambios: `Dias unidad asignados/activos` y `% Operativo` siguen por titulares
+  al corte (su versión diaria está pendiente de definir).
+
+### Foto de unidades sin cédula (`domain/equipment.py`)
+
+- Una motriz sin cédula en todo el periodo (ej. FL27, UT002 — 7 unidades en julio y
+  agosto) quedaba titular de `POR ASIGNAR` sin tipo mientras sus viajes caían en
+  `POR ASIGNAR <tipo>`. Ahora su foto es la asignación de su último día con viaje:
+  titular y utilizada en la misma fila. Sus arrastres la heredan.
+- `AsignacionVigente.pendiente()` arma la OpCédula en mayúsculas (igual que la de los
+  viajes del día) y tolera NaN.
+
+### Tipo de Unidad sin "TRACTOCAMION" (`equipment.py`, `processor.py`)
+
+- La cédula no usa "TRACTOCAMION": el tipo es SENCILLO, FULL, PATIO, etc.
+  `_apply_cedula_fallbacks` homologa `TRACTOCAMION <tipo>` → `<tipo>` y
+  `TRACTOCAMION` → `SENCILLO` antes de cualquier cálculo (registrado en
+  Inconsistencias). La misma regla aplica a la clave `Operación Cedula` del archivo
+  de objetivos (ninguno de los 18 archivos de 2026 la usa; es blindaje).
+- `CLAVE_CATEGORIA_A_TIPO_UNIDAD` (tipo de unidades sin cédula) usa el vocabulario
+  de la cédula. Antes `POR ASIGNAR TRACTOCAMION SENCILLO` y `POR ASIGNAR SENCILLO`
+  eran dos operaciones distintas.
+
+### Impacto Looker
+
+- La fila `Pendiente` ahora solo trae operaciones retiradas; los Por Asignar tienen
+  filas propias `POR ASIGNAR <tipo>`. Filtros por Gerencia `Pendiente` no cambian.
+- Objetivo/Cumplimiento por operación cambian donde hubo altas, bajas o
+  reasignaciones; Tendencia por operación cambia donde hubo reasignaciones.
+- Dos columnas nuevas al final de `Por Operación` (no mueven posiciones).
+
+### Verificación E2E (datos reales, `--cedulas-source excel`, sin subir a Sheets)
+
+| Corte | Filas | Σ Objetivo KM Por Operación (antes → ahora) | Por Equipo | Filas reales con objetivo distinto |
+|---|---|---|---|---|
+| Cierre agosto (31 cédulas) | 60 → 65 | 4,724,291.32 → 4,702,450.20 | 4,702,450.18 | 13 de 59 (STB FULL −38,565; LALA IRAPUATO FULL +32,855) |
+| 18/09 (12 días restantes) | 62 → 66 | 4,593,461.83 → 4,575,267.67 | 4,575,267.66 | 9 de 61 (STB FULL −27,838; SORIANA VILLA SENCILLO +7,165) |
+
+- KM cargado/vacío/total, diesel, viajes y Tendencia: Σ idénticas a Por Equipo y a la
+  corrida anterior. Motrices Titulares = motrices (576 / 590); Remolques + Dollies
+  Titulares = arrastres (1,009 / 944).
+- Por Equipo: 0 cambios numéricos; solo `Operacion Cedula`/`Tipo de Unidad` de las
+  unidades sin cédula y sus arrastres (12 / 7 equipos). Viajes: mismas filas y KM;
+  63 / 9 filas pasan de `POR ASIGNAR TRACTOCAMION SENCILLO` a `POR ASIGNAR SENCILLO`.
+- 228 tests unit (41 nuevos), incluido `test_por_operacion_cuadre.py` (cuadre
+  completo Por Operación vs Por Equipo sobre un escenario con reasignación, operación
+  retirada, Sin Asignación, unidad sin cédula y arrastres).
+- Observación previa, sin cambio: la hoja Viajes cuenta objetivo con comodatos hasta
+  la última cédula de la carpeta, no hasta el corte de viajes; si la carpeta va
+  adelantada al zmov, su Σ objetivo difiere de Por Equipo (18/09: −2,329 km, igual
+  antes y después de este cambio).
+
 ## 0.6.10 — 2026-08-07 (Modo excel: carpeta de cédulas vacía ya no aborta la corrida)
 
 En modo `excel`, una carpeta sin ningún `Cedula DDMMYYYY.xlsx` abortaba con "Sin

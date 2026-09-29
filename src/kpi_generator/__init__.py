@@ -1,3 +1,3 @@
 """KPI Generator — pipeline de KPIs de flota TUMSA."""
 
-__version__ = "0.6.10"
+__version__ = "0.7.0"

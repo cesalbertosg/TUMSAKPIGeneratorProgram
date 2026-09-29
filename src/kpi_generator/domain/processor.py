@@ -21,7 +21,13 @@ import pandas as pd
 from kpi_generator.config import Config, LogLevel
 from kpi_generator.domain.change_tracker import ChangeTracker
 from kpi_generator.domain.comodato import ComodatoManager
-from kpi_generator.domain.equipment import CLAVE_CATEGORIA_A_TIPO_UNIDAD, EquipmentAggregator, normalize_text
+from kpi_generator.domain.equipment import (
+    CLAVE_CATEGORIA_A_TIPO_UNIDAD,
+    EquipmentAggregator,
+    normalizar_opcedula,
+    normalizar_tipo_unidad,
+    normalize_text,
+)
 from kpi_generator.domain.opcedula import OpcedulaAggregator, post_calcular_tendencia
 from kpi_generator.domain.period import PeriodContext
 from kpi_generator.io import excel as excel_io
@@ -186,9 +192,11 @@ class DataProcessor:
                     return None
                 # Normaliza acentos/Ñ y mayúsculas para que 'Operación Cedula'
                 # haga match con el campo calculado desde la cédula
-                # (ver _get_operacion_cedula / _apply_cedula_fallbacks).
+                # (ver _get_operacion_cedula / _apply_cedula_fallbacks), con el
+                # mismo vocabulario de Tipo de Unidad (sin TRACTOCAMION, v0.7.0).
                 df_obj['Operación Cedula'] = (
                     df_obj['Operación Cedula'].astype(str).str.strip().map(normalize_text).str.upper()
+                    .map(normalizar_opcedula)
                 )
                 df_obj['Gerencia'] = (
                     df_obj['Gerencia'].astype(str).str.strip().map(normalize_text).str.upper()
@@ -374,6 +382,9 @@ class DataProcessor:
            porque "Operación Cedula" (calculado a partir de estas columnas
            en `_get_operacion_cedula`) se usa para emparejar contra
            `Operación Cedula` del archivo de objetivos.
+           Además homologa Tipo de Unidad (v0.7.0): no existe "TRACTOCAMION";
+           "TRACTOCAMION <tipo>" -> <tipo> y "TRACTOCAMION" -> "SENCILLO"
+           (`normalizar_tipo_unidad`), antes de cualquier cálculo.
         2. Rellena Gerencia/Operación/Circuito faltantes con
            `Config.CEDULA_FIELD_DEFAULTS`.
         3. Rellena Tipo de Unidad faltante desde el histórico de viajes
@@ -418,6 +429,22 @@ class DataProcessor:
                 # `.astype(object)` evita que una columna 100% NaN quede en
                 # float64 (ver comentario sobre text_cols arriba).
                 df[col] = normalized.replace('', np.nan).astype(object)
+
+        # --- 1b. Tipo de Unidad: vocabulario de la cédula (v0.7.0) ---
+        # No existe "TRACTOCAMION": el tipo es SENCILLO, FULL, PATIO, ...
+        # (Beto, 2026-09-29).
+        if 'Tipo de Unidad' in df.columns:
+            original = df['Tipo de Unidad']
+            homologado = original.map(normalizar_tipo_unidad)
+            cambio = original.notna() & (homologado != original)
+            for idx in df.index[cambio]:
+                self._registrar_inconsistencia(
+                    df.at[idx, 'Unidades'], df.at[idx, 'Fecha Cedula_dt'], 'Tipo de Unidad',
+                    valor_aplicado=homologado.at[idx],
+                    motivo='Tipo de Unidad homologado (no existe TRACTOCAMION)',
+                    valor_original=original.at[idx],
+                )
+            df['Tipo de Unidad'] = homologado.astype(object)
 
         # --- 2. Defaults para Gerencia/Operación/Circuito ---
         for campo, default in Config.CEDULA_FIELD_DEFAULTS.items():
@@ -565,8 +592,9 @@ class DataProcessor:
             else:
                 clave_categoria = str(clave_categoria.iloc[0]).upper()
             
-            # Determinar Tipo de Unidad desde ClaveCategoria
-            tipo_unidad = CLAVE_CATEGORIA_A_TIPO_UNIDAD.get(clave_categoria, f'TRACTOCAMION {clave_categoria}')
+            # Determinar Tipo de Unidad desde ClaveCategoria (vocabulario de la
+            # cédula: sin "TRACTOCAMION", v0.7.0)
+            tipo_unidad = CLAVE_CATEGORIA_A_TIPO_UNIDAD.get(clave_categoria, clave_categoria)
             
             # Crear operación cédula: POR ASIGNAR + Tipo
             # Como el circuito es "POR ASIGNAR" (circuito especial), usa el tipo de unidad
@@ -1213,7 +1241,8 @@ class DataProcessor:
             load_data -> PeriodContext.from_trips -> obj_mapping
             -> process_trips_optimized (integra comodatos, asigna OpCedula a viajes)
             -> EquipmentAggregator (Por Equipo: 1 fila por equipo unico)
-            -> OpcedulaAggregator (Por Operacion: 1 fila por OpCedula vigente)
+            -> OpcedulaAggregator (Por Operacion: OpCedulas vigentes + POR ASIGNAR
+               por tipo + Pendiente; KM/objetivo dia por dia)
             -> post_calcular_tendencia (rellena Tendencia KM/Viajes)
             -> ChangeTracker (Resumen de Cambios)
             -> _build_promedio_km_sheet (Promedio KM por Unidad)
@@ -1270,11 +1299,13 @@ class DataProcessor:
             )
             df_kpi = equipment_agg.aggregate()
             df_detalle_opcedula = equipment_agg.aggregate_detalle_opcedula()
+            df_objetivo_opcedula = equipment_agg.aggregate_objetivo_opcedula()
 
             opcedula_agg = OpcedulaAggregator(
                 df_equipos=df_kpi, obj_mapping=obj_mapping, period=period,
                 df_detalle_opcedula=df_detalle_opcedula,
                 log_callback=self.log_func,
+                df_objetivo_opcedula=df_objetivo_opcedula,
             )
             df_opcedula = opcedula_agg.aggregate()
 
@@ -1431,19 +1462,15 @@ class DataProcessor:
                 'Cumplimiento KM %': 'Cumplimiento KM OpCed %',
                 'Cumplimiento Viajes %': 'Cumplimiento Viajes OpCed %',
             })
-            # Sanea claves huerfanas (ninguna OpCedula vigente al corte las
-            # reclama) para que matcheen la fila consolidada 'Pendiente' en
+            # Sanea claves huerfanas (OpCedula retirada: ninguna fila de Por
+            # Operacion la reclama) para que matcheen la fila 'Pendiente' en
             # vez de quedar sin join (mismo criterio que
-            # OpcedulaAggregator.aggregate()).
-            if not df_kpi.empty:
-                motrices_kpi = df_kpi[df_kpi['Tipo Equipo'] == 'Motriz']
-                es_real_kpi = ~motrices_kpi['Operacion Cedula'].astype(str).str.startswith('POR ASIGNAR')
-                claves_reales = set(motrices_kpi.loc[es_real_kpi, 'Operacion Cedula'].unique())
-            else:
-                claves_reales = set()
-            op_dia_str = df['Operación cedula'].astype(str)
-            df['__opcedula_join'] = op_dia_str.where(op_dia_str.isin(claves_reales), 'Pendiente')
+            # OpcedulaAggregator.aggregate(); desde v0.7.0 cada 'POR ASIGNAR
+            # <tipo>' tiene fila propia).
             op_subset['__opcedula_join'] = op_subset['__opcedula_join'].astype(str)
+            claves_filas = set(op_subset['__opcedula_join']) - {'Pendiente'}
+            op_dia_str = df['Operación cedula'].astype(str)
+            df['__opcedula_join'] = op_dia_str.where(op_dia_str.isin(claves_filas), 'Pendiente')
             df = df.merge(op_subset, on='__opcedula_join', how='left')
             df = df.drop(columns=['__opcedula_join'])
 

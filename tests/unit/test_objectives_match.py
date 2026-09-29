@@ -7,11 +7,12 @@ KM/Viajes caía a 0.
 
 Este test reproduce el flujo real:
 1. `_apply_cedula_fallbacks` normaliza `Tipo de Unidad` de la cédula
-   ("Tractocamión Full" -> "Tractocamion Full").
-2. `create_unit_mapping` arma `Operación cedula` = "CUERNAVACA TRACTOCAMION FULL"
+   ("Tractocamión Full" -> "FULL": sin acentos y sin TRACTOCAMION, v0.7.0).
+2. `create_unit_mapping` arma `Operación cedula` = "CUERNAVACA FULL"
    (DEDICADO es circuito especial -> usa Tipo de Unidad).
 3. `Operación Cedula` de objetivos ("Cuernavaca Tractocamión Full") se
-   normaliza igual que en `load_data` (normalize_text + upper).
+   normaliza igual que en `load_data` (normalize_text + upper +
+   normalizar_opcedula).
 4. `process_objectives` debe encontrar el match -> Objetivo KM Diario > 0.
 """
 
@@ -21,7 +22,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from kpi_generator.domain.equipment import normalize_text
+from kpi_generator.domain.equipment import normalizar_opcedula, normalize_text
 from kpi_generator.domain.processor import DataProcessor
 
 
@@ -41,7 +42,7 @@ def test_objetivo_match_pese_a_acento_en_tipo_de_unidad() -> None:
     analysis_date = datetime(2026, 6, 1)
     unit_mapping = proc.create_unit_mapping(df_cedulas, analysis_date)
 
-    assert unit_mapping['C070']['Operación cedula'] == 'CUERNAVACA TRACTOCAMION FULL'
+    assert unit_mapping['C070']['Operación cedula'] == 'CUERNAVACA FULL'
 
     df_objectives = pd.DataFrame([
         {
@@ -52,12 +53,13 @@ def test_objetivo_match_pese_a_acento_en_tipo_de_unidad() -> None:
     # Misma normalizacion que `load_data` aplica a df_objectives.
     df_objectives['Operación Cedula'] = (
         df_objectives['Operación Cedula'].astype(str).str.strip().map(normalize_text).str.upper()
+        .map(normalizar_opcedula)
     )
 
     obj_mapping = proc.process_objectives(df_objectives, unit_mapping, analysis_date)
 
-    assert 'CUERNAVACA TRACTOCAMION FULL' in obj_mapping
-    info = obj_mapping['CUERNAVACA TRACTOCAMION FULL']
+    assert 'CUERNAVACA FULL' in obj_mapping
+    info = obj_mapping['CUERNAVACA FULL']
     assert info['Objetivo KM'] == 3000
     assert info['Objetivo Viajes'] == 60
     assert info['Objetivo KM Diario'] > 0
