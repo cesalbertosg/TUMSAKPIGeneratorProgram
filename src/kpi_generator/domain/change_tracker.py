@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from kpi_generator.config import Config
+from kpi_generator.domain.equipment import operacion_cedula
 
 
 class ChangeTracker:
@@ -153,11 +154,8 @@ class ChangeTracker:
         return changes
 
     def _get_operacion_cedula(self, operacion: str, circuito: str, tipo_unidad: str) -> str:
-        """Generar cédula de operación según reglas de negocio."""
-        circuito_upper = circuito.upper()
-        operacion_upper = operacion.upper()
-        tipo_unidad_upper = tipo_unidad.upper()
+        """Generar cédula de operación según reglas de negocio.
 
-        if circuito_upper in Config.SPECIAL_CIRCUITS:
-            return f"{operacion_upper} {tipo_unidad_upper}"
-        return f"{operacion_upper} {circuito_upper}"
+        Delegado a `equipment.operacion_cedula`, fuente única de la regla (v0.7.1).
+        """
+        return operacion_cedula(operacion, circuito, tipo_unidad, Config.SPECIAL_CIRCUITS)

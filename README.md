@@ -48,7 +48,15 @@ python -m kpi_generator.cli run --trips zmov.XLSX --fuel zmva.XLSX --objectives 
 
 # Fallback manual a Excel si la BD está caída
 python -m kpi_generator.cli run --cedulas-source excel --cedulas <carpeta> ...
+
+# Excel usando SOLO las cédulas físicas (sin completar faltantes desde Google Sheets)
+python -m kpi_generator.cli run --cedulas-source excel --cedulas <carpeta> --no-completar-cedulas ...
 ```
+
+En modo `excel`, por default los días del periodo sin cédula física se completan
+desde Google Sheets (checkbox "Completar cédulas faltantes del periodo desde Google
+Sheets" en la GUI); lo que Sheets no tenga se rellena con la cédula del día anterior,
+con aviso. Ver `docs/cedula-fallbacks-y-respaldo.md`.
 
 ## Fuente de cédulas
 

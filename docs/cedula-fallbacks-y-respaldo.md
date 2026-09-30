@@ -78,6 +78,30 @@ objetivos también se normaliza en `load_data` (`Operación Cedula` y
 `Operando` no recibe default propio: una cadena vacía se preserva tal cual —
 `categoria_status` la trata como `'Otros Status'`.
 
+### 1b. Vocabulario de Tipo de Unidad (v0.7.0 / v0.7.1)
+
+Reglas de negocio aplicadas antes de cualquier cálculo; cada cambio queda en
+"Inconsistencias" con el valor original:
+
+| Regla | Ejemplo | Motivo registrado |
+|---|---|---|
+| No existe "TRACTOCAMION": `TRACTOCAMION <tipo>` → `<tipo>`, solo → `SENCILLO` | `TRACTOCAMION FULL` → `FULL` | "Tipo de Unidad homologado (no existe TRACTOCAMION)" |
+
+La clave `Operación Cedula` del archivo de objetivos pasa por la misma
+homologación de TRACTOCAMION (`normalizar_opcedula`), para que ambos lados
+sigan empatando.
+
+**TORTHON RF sustituto (v0.7.1, regla de Operación Cedula, no de datos).**
+FEDEX, MERCADO LIBRE y DHL (y variantes: `FEDEX VILLA`, `MERCADO LIBRE DFP`;
+lista en `Config.OPERACIONES_SIN_TORTHON_RF`) no manejan torthon refrigerado:
+un `TORTHON RF` asignado ahí sustituye a otro camión. Su **Tipo de Unidad no
+cambia** (sigue diciendo RF en Por Equipo y Viajes); solo su **Operación Cedula**
+usa TORTHON — C153 en MERCADO LIBRE → `MERCADO LIBRE TORTHON`. La regla vive en
+`equipment.operacion_cedula` / `tipo_opcedula`, fuente única que usan Por
+Equipo, el procesador, ChangeTracker y ComodatoManager; la limpieza solo lo
+reporta en el log (`[CED]`). La fila de Por Operación de esa operación muestra
+`TORTHON` como tipo.
+
 ### 2. Defaults para Gerencia/Operación/Circuito
 
 Si vienen vacíos (NaN tras el paso 1), se rellenan con
@@ -350,6 +374,32 @@ Notas del gap-filler (decisiones Beto 09/07/2026):
   fecha les gana por fusión.
 - Retención del historial: Google consolida las revisiones del Sheet en ~una
   semana — el gap-filler es para huecos recientes (mes en curso).
+
+### Opción "Completar cédulas faltantes del periodo desde Google Sheets" (v0.7.1)
+
+El gap-filler pasa a ser una opción explícita: checkbox en la GUI (debajo de
+"Fuente cédulas", solo activo con `excel`, marcado por default y recordado en
+`gui_state.json`) y `--completar-cedulas` / `--no-completar-cedulas` en el CLI
+(default activado, igual que antes).
+
+- **Periodo** = día 1 del mes → último viaje del zmov (el mismo de
+  `PeriodContext`), aunque el zmov empiece después del día 1.
+- **Activada**: base = cédulas físicas de la carpeta; los días del periodo sin
+  archivo se piden a Google Sheets (historial de revisiones) y se guardan como
+  `Cedula DDMMYYYY Completa.xlsx`. Lo que Sheets no tenga se rellena con la
+  cédula del día anterior, con aviso visible (diálogo de la GUI + hoja "Fuente
+  Cedulas") que lista esos días. Si falta `SHEETS_ID_CEDULAS` o el JSON de
+  credenciales, la GUI lo avisa **antes** de correr y la corrida continúa con
+  solo físicas + relleno.
+- **Desactivada**: solo las cédulas físicas + relleno con el día anterior; no
+  se consulta Google Sheets.
+- **Relleno regular (ambos modos)**: ahora cubre también los días posteriores
+  a la última cédula disponible, hasta el fin del periodo. Antes
+  `fill_missing_dates` solo rellenaba huecos entre dos cédulas y esos días
+  finales quedaban sin cédula (todas las unidades Sin Asignación, sin objetivo)
+  y sin aviso. Los días del inicio del periodo sin ninguna cédula previa no se
+  pueden rellenar: se avisan y quedan en `fechas_sin_cedula` (origen
+  `sin cedula` en "Fuente Cedulas").
 
 ### Carpeta de cédulas vacía (v0.6.10)
 

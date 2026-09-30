@@ -57,6 +57,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Genera el Excel pero NO sincroniza a Google Sheets. Por default sí sube.",
     )
+    run.add_argument(
+        "--completar-cedulas",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fuente excel: completa los días del periodo sin cédula física desde Google "
+             "Sheets (default). Con --no-completar-cedulas usa solo las cédulas físicas "
+             "+ relleno con el día anterior.",
+    )
 
     diff = sub.add_parser("diff-cedulas",
                           help="Compara cédulas cargadas desde BD vs Excel para un rango — útil en validación de migración.")
@@ -110,6 +118,9 @@ def _cmd_run(args) -> int:
 
     fuente_solicitada = (args.cedulas_source or Config.CEDULAS_SOURCE).lower()
     print(f"[SRC] Fuente de cédulas solicitada: {fuente_solicitada}")
+    if fuente_solicitada == "excel":
+        print(f"[SRC] Completar cédulas faltantes desde Google Sheets: "
+              f"{'sí' if args.completar_cedulas else 'no'}")
 
     result = processor.generate_report(
         str(args.trips),
@@ -119,6 +130,7 @@ def _cmd_run(args) -> int:
         str(args.objectives) if args.objectives else None,
         cedulas_source=args.cedulas_source,
         upload_sheets=not args.no_upload_sheets,
+        completar_cedulas_sheets=args.completar_cedulas,
     )
 
     if result:

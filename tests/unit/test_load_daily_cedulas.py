@@ -504,6 +504,99 @@ def test_carpeta_vacia_sin_cobertura_drive_falla_limpio(tmp_path) -> None:
     assert any('historial Drive' in m for m in logs)
 
 
+def test_periodo_rellena_dias_finales_con_la_cedula_anterior(tmp_path) -> None:
+    """v0.7.1: cédulas físicas 1-2, periodo 1-4, sin Sheets → los días 3 y 4
+    (después de la última cédula) se rellenan con la del día 2 y se avisa.
+    Antes quedaban sin cédula: todas las unidades Sin Asignación."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario(Operando='Operando')]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario(Operando='Taller')]).to_excel(
+        tmp_path / "Cedula 02062026.xlsx", engine='openpyxl', index=False)
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 4),
+    )
+
+    assert result is not None
+    assert result['Fecha Cedula_dt'].nunique() == 4
+    dia4 = result[result['Fecha Cedula_dt'] == pd.Timestamp('2026-06-04')]
+    assert len(dia4) == 1 and dia4.iloc[0]['Operando'] == 'Taller'  # la del día 2
+    assert lineage.fechas_ffill == [pd.Timestamp('2026-06-03'), pd.Timestamp('2026-06-04')]
+    assert any('03/06/2026–04/06/2026' in adv and 'día anterior' in adv
+               for adv in lineage.advertencias)
+
+
+def test_periodo_dias_iniciales_sin_cedula_previa_se_avisan(tmp_path) -> None:
+    """Cédulas 3-4 y periodo 1-4: los días 1-2 no tienen cédula previa de la
+    cual rellenar → quedan en `fechas_sin_cedula` con aviso visible."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 03062026.xlsx", engine='openpyxl', index=False)
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 04062026.xlsx", engine='openpyxl', index=False)
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 4),
+    )
+
+    assert result is not None
+    assert lineage.fechas_sin_cedula == [date_cls(2026, 6, 1), date_cls(2026, 6, 2)]
+    assert any('al inicio del periodo' in adv and '01/06/2026–02/06/2026' in adv
+               for adv in lineage.advertencias)
+    assert lineage.to_dataframe().query("Categoría == 'FECHA'")['Detalle'].str.contains(
+        'sin cedula').sum() == 2
+
+
+def test_periodo_completo_no_advierte(tmp_path) -> None:
+    from kpi_generator.lineage import CedulaLineage
+
+    for dia in (1, 2, 3):
+        pd.DataFrame([_fila_diario()]).to_excel(
+            tmp_path / f"Cedula 0{dia}062026.xlsx", engine='openpyxl', index=False)
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 3),
+        gap_fetcher=lambda _f: {},
+    )
+
+    assert result is not None
+    assert not lineage.advertencias
+    assert lineage.fechas_ffill == [] and lineage.fechas_sin_cedula == []
+
+
+def test_sheets_parcial_avisa_dias_que_no_encontro(tmp_path) -> None:
+    """Físico día 1; Sheets solo tiene el día 2 → días 3-4 al relleno con la
+    cédula anterior (la de Sheets del día 2), avisando que no estaban en Sheets."""
+    from kpi_generator.lineage import CedulaLineage
+
+    pd.DataFrame([_fila_diario()]).to_excel(
+        tmp_path / "Cedula 01062026.xlsx", engine='openpyxl', index=False)
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    result = load_daily_cedulas(
+        str(tmp_path), _NOLOG, lineage=lineage,
+        fecha_min=date_cls(2026, 6, 1), fecha_max=date_cls(2026, 6, 4),
+        gap_fetcher=lambda faltantes: {date_cls(2026, 6, 2): _drive_frame(date_cls(2026, 6, 2))},
+    )
+
+    assert result is not None
+    assert lineage.fechas_drive == [date_cls(2026, 6, 2)]
+    assert lineage.fechas_ffill == [pd.Timestamp('2026-06-03'), pd.Timestamp('2026-06-04')]
+    dia4 = result[result['Fecha Cedula_dt'] == pd.Timestamp('2026-06-04')]
+    assert dia4.iloc[0]['Operación'] == 'DRIVE-OP'  # rellenado desde el día 2 (Sheets)
+    assert any('ni en Google Sheets' in adv and '03/06/2026–04/06/2026' in adv
+               for adv in lineage.advertencias)
+
+
 def test_carpeta_vacia_sin_fetcher_sigue_abortando(tmp_path) -> None:
     """Regresión: sin gap_fetcher (sin Sheet ID o sin rango de viajes) una
     carpeta vacía sigue siendo un fallo duro."""

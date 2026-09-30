@@ -6,6 +6,9 @@ from typing import Dict
 
 import pandas as pd
 
+from kpi_generator.config import Config
+from kpi_generator.domain.equipment import operacion_cedula
+
 
 class ComodatoManager:
     """Gestor modular de registros comodato para días sin viajes."""
@@ -14,16 +17,11 @@ class ComodatoManager:
         self.comodato_id = base_id
 
     def _get_operacion_cedula_comodato(self, operacion: str, circuito: str, tipo_unidad: str) -> str:
-        """Generar cédula de operación para comodatos según reglas de negocio."""
-        circuito_upper = circuito.upper()
-        operacion_upper = operacion.upper()
-        tipo_unidad_upper = tipo_unidad.upper()
+        """Generar cédula de operación para comodatos según reglas de negocio.
 
-        special_circuits = {'DEDICADO', 'POR ASIGNAR', 'SPRINTER', 'TERCERO', 'VENTA'}
-
-        if circuito_upper in special_circuits:
-            return f"{operacion_upper} {tipo_unidad_upper}"
-        return f"{operacion_upper} {circuito_upper}"
+        Delegado a `equipment.operacion_cedula`, fuente única de la regla (v0.7.1).
+        """
+        return operacion_cedula(operacion, circuito, tipo_unidad, Config.SPECIAL_CIRCUITS)
 
     def create_comodatos(self, df_trips: pd.DataFrame, df_cedulas: pd.DataFrame,
                          unit_mapping: Dict, log_func=print) -> pd.DataFrame:

@@ -435,6 +435,7 @@ def fetch_dates_from_revisions(
             lineage.advertencias.append(msg)
 
     folder_path = Path(save_folder) if save_folder else None
+    sin_estatus: list[date] = []
 
     for rev_id, dates_for_rev in rev_id_to_dates.items():
         snapshot_rows = (
@@ -453,6 +454,14 @@ def fetch_dates_from_revisions(
             df_d = pd.DataFrame(records)
             df_d = df_d.rename(columns={'Unidad': 'Unidades'})
             if 'Unidades' not in df_d.columns:
+                continue
+            # Un día sin NINGÚN estatus capturado (típico: domingo — la columna
+            # existe pero vacía) no es la cédula del día: no se usa ni se guarda
+            # y queda al relleno con el día anterior, que es la práctica
+            # operativa (el domingo se copia el sábado). Antes entraba con
+            # Operando vacío en todas las unidades (bug real 27/09/2026).
+            if 'Operando' in df_d.columns and not df_d['Operando'].astype(str).str.strip().any():
+                sin_estatus.append(d)
                 continue
             df_d['Unidades'] = df_d['Unidades'].str.strip().str.upper()
             df_d['Fecha Cedula'] = d.strftime('%d/%m/%Y')
@@ -477,6 +486,14 @@ def fetch_dates_from_revisions(
                         log(f"Drive API → guardado: {fname}", code="SAVE")
                 except Exception:
                     pass
+
+    if sin_estatus:
+        msg = (f"Google Sheets no tiene estatus capturados para "
+               f"{', '.join(d.strftime('%d/%m/%Y') for d in sorted(sin_estatus))} "
+               "(típico de domingo): esos días se tratan como faltantes")
+        log(msg, LogLevel.ERROR, "WARN")
+        if lineage is not None:
+            lineage.advertencias.append(msg)
 
     return result
 

@@ -129,6 +129,44 @@ def test_extract_vertical_acepta_headers_iso_de_revision() -> None:
     assert len(_extract_cedula_vertical_for_date(rows_vivo, date(2026, 7, 6))) == 1
 
 
+def test_fetch_dates_dia_sin_estatus_se_trata_como_faltante(tmp_path) -> None:
+    """Bug real (27/09/2026, domingo): la columna del día existe en el Sheet pero
+    sin ningún estatus capturado. Antes entraba con Operando vacío en las 584
+    unidades; ahora no se usa ni se guarda (queda al relleno con el día anterior,
+    que es la práctica: el domingo se copia el sábado) y se avisa."""
+    from unittest.mock import MagicMock
+
+    from kpi_generator.io.sheets import fetch_dates_from_revisions
+    from kpi_generator.lineage import CedulaLineage
+
+    rows = [
+        ['Unidad', 'Gerencia', 'Operación', 'Tipo de Unidad', 'Circuito', '26/09/2026', '27/09/2026'],
+        ['C135', 'Sandra Luna', 'OFICCE MAX', 'TORTHON', 'DEDICADO', 'Operando', ''],
+        ['T401', 'Pendiente', 'Por Asignar', 'SENCILLO', 'POR ASIGNAR', 'Taller', ''],
+    ]
+    ws = MagicMock(title='Unidades Motriz')
+    ws.get_all_values.return_value = rows
+    gc = MagicMock()
+    gc.open_by_key.return_value.worksheets.return_value = [ws]
+    gc.open_by_key.return_value.worksheet.return_value = ws
+    revisiones = [{'id': 'r1', 'modifiedTime': '2026-09-26T08:00:00.000Z'}]
+
+    lineage = CedulaLineage(fuente_solicitada='excel')
+    with patch('kpi_generator.io.sheets.Credentials.from_service_account_file'), \
+            patch('kpi_generator.io.sheets.gspread.authorize', return_value=gc), \
+            patch('kpi_generator.io.sheets._list_revisions', return_value=revisiones):
+        result = fetch_dates_from_revisions(
+            'fake-id', _NOLOG, [date(2026, 9, 26), date(2026, 9, 27)],
+            save_folder=str(tmp_path), approximate_older=False, lineage=lineage,
+        )
+
+    assert list(result) == [date(2026, 9, 26)]
+    assert result[date(2026, 9, 26)]['Operando'].tolist() == ['Operando', 'Taller']
+    assert lineage.fechas_drive == [date(2026, 9, 26)]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['Cedula 26092026 Completa.xlsx']
+    assert any('27/09/2026' in adv and 'estatus' in adv for adv in lineage.advertencias)
+
+
 def test_fetch_dates_lista_vacia_no_conecta() -> None:
     """Con 0 fechas solicitadas ni siquiera intenta conectar (carpeta completa
     → modo excel 100% offline como siempre)."""

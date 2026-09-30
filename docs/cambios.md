@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.7.1 — 2026-09-30 (Opción "Completar cédulas faltantes del periodo desde Google Sheets")
+
+Beto: en modo `excel` el programa no comprobaba que el periodo tuviera todas sus
+cédulas. El relleno desde el historial del Google Sheet (gap-filler, v0.6.5) solo
+entraba si el `.env` tenía `SHEETS_ID_CEDULAS` — sin él, un WARN en el log y nada
+más — y no había forma de elegir usar únicamente las cédulas físicas.
+
+- **Checkbox nuevo en la GUI** (debajo de "Fuente cédulas", solo activo con
+  `excel`): "Completar cédulas faltantes del periodo desde Google Sheets". Marcado
+  por default y recordado en `gui_state.json`. CLI: `--completar-cedulas` (default)
+  / `--no-completar-cedulas`.
+- **Activado**: base = Excel locales; los días del periodo sin archivo se traen de
+  Google Sheets (se guardan como `Cedula DDMMYYYY Completa.xlsx`); lo que Sheets no
+  tenga se rellena con la cédula del día anterior y **se avisa** qué días fueron
+  (diálogo de la GUI + hoja "Fuente Cedulas"). Si falta `SHEETS_ID_CEDULAS` o el
+  JSON de credenciales, la GUI lo avisa antes de correr y el aviso queda también en
+  "Fuente Cedulas".
+- **Desactivado**: solo cédulas físicas + relleno con el día anterior; no consulta
+  Google Sheets.
+- **Periodo** = día 1 del mes → último viaje (el de `PeriodContext`), aunque el zmov
+  empiece después.
+- **Fix del relleno regular** (`fill_missing_dates(..., fecha_fin=)`): ahora cubre
+  también los días posteriores a la última cédula disponible. Antes solo rellenaba
+  huecos entre dos cédulas: si la carpeta iba atrasada respecto al zmov, esos días
+  finales quedaban sin cédula (todas las unidades Sin Asignación, sin objetivo) y
+  sin aviso. Los días del inicio sin ninguna cédula previa se avisan
+  (`fechas_sin_cedula`, origen `sin cedula`).
+- "Fuente Cedulas" registra la opción usada (fila CORRIDA) y el resumen `[SRC]`
+  agrega "completar desde Sheets: sí/no".
+- **Fix (bug de v0.6.5, hallado al validar)**: el Google Sheet no captura estatus
+  los domingos (la columna existe pero vacía). El domingo traído de Sheets entraba
+  con `Operando` vacío en todas las unidades (contaban como "Otros Status").
+  `fetch_dates_from_revisions` ahora trata un día sin ningún estatus como faltante:
+  no lo usa ni lo guarda, avisa, y queda al relleno con el día anterior — que es la
+  práctica operativa (el domingo se copia el sábado).
+- **TORTHON RF en FEDEX / MERCADO LIBRE / DHL** (Beto): esas operaciones no manejan
+  torthon refrigerado; un RF asignado ahí es sustituto de otro camión. Su Tipo de
+  Unidad **sigue diciendo RF** en los reportes; solo su Operación Cedula es
+  `... TORTHON`. Aplica a sus variantes (`FEDEX VILLA`, `MERCADO LIBRE DFP`); lista
+  en `Config.OPERACIONES_SIN_TORTHON_RF`. Caso real: C153 venía `TORTHON RF` en el
+  Google Sheet y `TORTHON` en las cédulas físicas.
+- **Refactor**: la regla de Operación Cedula tenía 4 copias (procesador,
+  ChangeTracker, ComodatoManager, Por Equipo); ahora todas delegan a
+  `equipment.operacion_cedula`, fuente única. La fila de Por Operación de una
+  operación sin RF muestra `TORTHON` aunque su primer titular sea un RF sustituto.
+- 23 tests nuevos (`test_completar_cedulas_sheets.py`, `test_load_daily_cedulas.py`,
+  `test_load_cedulas_for_period.py`, `test_cedula_fallbacks.py`, `test_equipment.py`,
+  `test_opcedula.py`): 251 unit.
+
+### Verificación E2E (septiembre 2026 real, zmov del 30/09 → periodo 01–29/09)
+
+Copia de la carpeta de cédulas sin los días 25–29, sin subir a Sheets:
+
+| Corrida | Origen 25–29/09 | Días asignados | Sin asignación | Operando | Objetivo KM |
+|---|---|---|---|---|---|
+| Carpeta física completa (referencia) | físico | 16,348 | 762 | 10,767 | 4,571,073.68 |
+| Completar ON (sin regla RF) | Sheets 25, 26, 28, 29; 27 (domingo) relleno | 16,348 | 762 | 10,767 | 4,570,441.98 |
+| **Completar ON + regla RF** (C153 conserva `TORTHON RF`, OpCédula `MERCADO LIBRE TORTHON`) | igual | 16,348 | 762 | 10,767 | **4,571,073.71** |
+| Completar OFF | relleno con el 24/09 | 16,350 | 760 | 10,765 | 4,572,036.25 |
+
+- Con la regla RF, ON reproduce **exacto** la corrida con las cédulas físicas: 0
+  diferencias en las 66 filas de Por Operación (titulares, utilizadas, KM, viajes,
+  objetivo, tendencia, días). Sin la regla, la diferencia de objetivo (−631.70) era
+  C153 (`TORTHON RF` en el Sheet). Circuito difiere solo por acentos y por 2
+  unidades vacías en el Sheet que el fallback deja en TERCERO, igual que la física.
+- Avisos de ON: "Google Sheets no tiene estatus capturados para 27/09/2026" y
+  "1 día(s) del periodo sin cédula física ni en Google Sheets (27/09/2026): se usó
+  la cédula del día anterior".
+
 ## 0.7.0 — 2026-09-29 (Por Operación día por día: objetivo, POR ASIGNAR por tipo, arrastres)
 
 Principio rector validado por Beto: **TODOS LOS CÁLCULOS SE ASIGNAN DIARIAMENTE**

@@ -80,6 +80,13 @@ class Config:
 
     SPECIAL_CIRCUITS = {'DEDICADO', 'POR ASIGNAR', 'SPRINTER', 'TERCERO', 'VENTA'}
 
+    # Operaciones que no manejan torthon refrigerado (Beto, 2026-09-30): un
+    # "TORTHON RF" asignado ahí está en sustitución de otro camión, así que su
+    # Operación Cedula es "... TORTHON" (equipment.tipo_opcedula). Su Tipo de
+    # Unidad sigue diciendo RF en los reportes. Aplica también a sus variantes
+    # ("FEDEX VILLA", "MERCADO LIBRE DFP").
+    OPERACIONES_SIN_TORTHON_RF = ('FEDEX', 'MERCADO LIBRE', 'DHL')
+
     CREDENTIALS_PATH = str(
         _project_root() / os.getenv("GOOGLE_CREDENTIALS_PATH", "secrets/google_service_account.json")
     )

@@ -68,6 +68,12 @@ class CedulaLineage:
     fallbacks: list[str] = field(default_factory=list)
     advertencias: list[str] = field(default_factory=list)
     carpeta_mixta: bool = False
+    # v0.7.1 (modo excel): True/False = opción "Completar cédulas faltantes del
+    # periodo desde Google Sheets"; None = no aplica (otras fuentes).
+    completar_sheets: bool | None = None
+    # Días del periodo sin ninguna cédula (ni física, ni Sheets, ni una previa
+    # de la cual rellenar): las unidades quedan Sin Asignación esos días.
+    fechas_sin_cedula: list = field(default_factory=list)
     # (unidad, fecha, campo) completados por fusión diario+variante del mismo
     # día — el processor los vuelca a la hoja "Inconsistencias".
     fusion_fills: list[tuple] = field(default_factory=list)
@@ -97,6 +103,8 @@ class CedulaLineage:
             por_fecha[_fmt_fecha(d)] = 'drive'
         for d in self.fechas_ffill:
             por_fecha[_fmt_fecha(d)] = 'ffill'
+        for d in self.fechas_sin_cedula:
+            por_fecha[_fmt_fecha(d)] = 'sin cedula'
         # Fechas físicas sin archivo registrado (p. ej. fuente sheets, que no
         # construye ArchivoCedula por revisión) quedan como 'fisico'.
         for d in self.fechas_fisicas:
@@ -127,6 +135,11 @@ class CedulaLineage:
                 f"{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
             )),
         ]
+        if self.completar_sheets is not None:
+            rows.append(fila('CORRIDA', detalle=(
+                "Completar cédulas faltantes del periodo desde Google Sheets: "
+                + ('Sí' if self.completar_sheets else 'No')
+            )))
         for fb in self.fallbacks:
             rows.append(fila('FALLBACK', detalle=fb))
         if self.carpeta_mixta:
@@ -171,6 +184,10 @@ class CedulaLineage:
         if self.fechas_drive:
             partes.append(f"{len(self.fechas_drive)} días Drive")
         partes.append(f"{len(self.fechas_ffill)} días ffill")
+        if self.fechas_sin_cedula:
+            partes.append(f"{len(self.fechas_sin_cedula)} días SIN CÉDULA")
+        if self.completar_sheets is not None:
+            partes.append(f"completar desde Sheets: {'sí' if self.completar_sheets else 'no'}")
         if self.carpeta_mixta:
             partes.append("CARPETA MIXTA")
         if self.fallbacks:

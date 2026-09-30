@@ -39,7 +39,8 @@ class KPIGeneratorGUI:
         # Arranque del dropdown (v0.6.4): última selección guardada >
         # .env CEDULAS_SOURCE (este solo decide la primera sesión). Evita que
         # el default del .env (db) pise silenciosamente la elección habitual.
-        _default_source = self._load_last_source() or Config.CEDULAS_SOURCE
+        _estado = self._load_gui_state()
+        _default_source = _estado.get('cedulas_source') or Config.CEDULAS_SOURCE
         # Si psycopg2 no esta instalado (distribuciones standalone sin BD),
         # forzamos arranque en "excel". El dropdown ocultara la opcion "db".
         if _default_source == "db" and not Config.db_available():
@@ -47,6 +48,11 @@ class KPIGeneratorGUI:
         if _default_source not in ("db", "excel", "sheets"):
             _default_source = "excel"
         self.cedulas_source = tk.StringVar(value=_default_source)
+        # v0.7.1 (fuente excel): completar los días del periodo sin cédula
+        # física desde Google Sheets. Marcado por default; recuerda la última
+        # elección igual que la fuente.
+        self.completar_sheets_var = tk.BooleanVar(
+            value=bool(_estado.get('completar_cedulas_sheets', True)))
         # Default: sí sube a Google Sheets al terminar (igual que antes del v0.5.1).
         self.upload_sheets_var = tk.BooleanVar(value=True)
 
@@ -293,7 +299,40 @@ class KPIGeneratorGUI:
         combo.bind('<<ComboboxSelected>>', self._on_source_changed)
         self._update_source_indicator()
 
+        # v0.7.1: completar el periodo desde Google Sheets (solo fuente excel).
+        completar_row = tk.Frame(parent, bg=self.colors['bg_card'])
+        completar_row.pack(fill="x", pady=(0, 6))
+        self.completar_sheets_chk = tk.Checkbutton(
+            completar_row,
+            text="Completar cédulas faltantes del periodo desde Google Sheets",
+            variable=self.completar_sheets_var,
+            command=self._save_gui_state,
+            bg=self.colors['bg_card'],
+            fg=self.colors['text_primary'],
+            font=('Segoe UI', 10),
+            activebackground=self.colors['bg_card'],
+            activeforeground=self.colors['text_primary'],
+            selectcolor=self.colors['bg_secondary'],
+            disabledforeground=self.colors['text_secondary'],
+            borderwidth=0,
+            highlightthickness=0,
+            cursor='hand2',
+        )
+        self.completar_sheets_chk.pack(side="left", padx=(32, 0))
+        tk.Label(
+            completar_row,
+            text="(los Excel locales mandan; si Sheets no tiene el día, se usa el día anterior)",
+            bg=self.colors['bg_card'], fg=self.colors['text_secondary'],
+            font=('Segoe UI', 8),
+        ).pack(side="left", padx=(8, 0))
+        self._update_completar_state()
+
         return row
+
+    def _update_completar_state(self):
+        """El checkbox de completar desde Sheets solo aplica a la fuente excel."""
+        estado = 'normal' if self.cedulas_source.get() == 'excel' else 'disabled'
+        self.completar_sheets_chk.config(state=estado)
 
     def _update_source_indicator(self):
         """Refresca el texto/color del indicador según la fuente seleccionada."""
@@ -308,17 +347,19 @@ class KPIGeneratorGUI:
 
     def _on_source_changed(self, _event=None):
         self._update_source_indicator()
+        self._update_completar_state()
         self._save_gui_state()
         self.log(f"[SRC] Fuente cédulas: {self.cedulas_source.get()}")
 
-    def _load_last_source(self):
-        """Última fuente usada (Config.GUI_STATE_PATH). Best-effort: None si no hay."""
+    def _load_gui_state(self) -> dict:
+        """Últimas selecciones (Config.GUI_STATE_PATH). Best-effort: {} si no hay."""
         try:
             import json
             with open(Config.GUI_STATE_PATH, encoding='utf-8') as fh:
-                return json.load(fh).get('cedulas_source')
+                estado = json.load(fh)
+            return estado if isinstance(estado, dict) else {}
         except Exception:
-            return None
+            return {}
 
     def _save_gui_state(self):
         """Persiste la selección actual. Best-effort: nunca aborta la GUI."""
@@ -326,7 +367,10 @@ class KPIGeneratorGUI:
             import json
             Config.GUI_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
             with open(Config.GUI_STATE_PATH, 'w', encoding='utf-8') as fh:
-                json.dump({'cedulas_source': self.cedulas_source.get()}, fh)
+                json.dump({
+                    'cedulas_source': self.cedulas_source.get(),
+                    'completar_cedulas_sheets': self.completar_sheets_var.get(),
+                }, fh)
         except Exception:
             pass
 
@@ -541,10 +585,21 @@ class KPIGeneratorGUI:
             messagebox.showerror("Error de Carpeta", "La carpeta de cédulas no es válida")
             return False
 
+        completar = source == 'excel' and self.completar_sheets_var.get()
+
         # v0.6.10: carpeta vacía ya no aborta el proceso (se reconstruye desde el
         # historial del Sheet), pero es la única señal previa de que se eligió la
         # carpeta equivocada — se confirma antes de gastar la corrida.
         if source == 'excel' and not any(Path(self.paths["cedulas"].get()).glob("*.xlsx")):
+            if not completar:
+                messagebox.showerror(
+                    "Carpeta de cédulas vacía",
+                    "La carpeta de cédulas no tiene ningún archivo .xlsx y "
+                    "'Completar cédulas faltantes del periodo desde Google Sheets' "
+                    "está desactivado: no hay cédulas para el periodo.\n\n"
+                    "Selecciona la carpeta correcta o activa la opción.",
+                )
+                return False
             if not messagebox.askyesno(
                 "Carpeta de cédulas vacía",
                 "La carpeta de cédulas no tiene ningún archivo .xlsx.\n\n"
@@ -553,6 +608,25 @@ class KPIGeneratorGUI:
                 "guardará ahí los días que recupere.\n\n"
                 "¿Deseas continuar?\n\n"
                 "Elige 'No' si te equivocaste de carpeta.",
+            ):
+                return False
+
+        # v0.7.1: con la opción activada, avisar ANTES de correr si falta la
+        # configuración para consultar Google Sheets.
+        if completar:
+            faltantes = []
+            if not Config.CEDULA_SHEET_ID:
+                faltantes.append("SHEETS_ID_CEDULAS en el archivo .env")
+            if not Path(Config.CREDENTIALS_PATH).exists():
+                faltantes.append("el archivo de credenciales de Google "
+                                 "(secrets/google_service_account.json)")
+            if faltantes and not messagebox.askyesno(
+                "No se puede consultar Google Sheets",
+                "'Completar cédulas faltantes del periodo desde Google Sheets' está "
+                "activado, pero falta:\n- " + "\n- ".join(faltantes) + "\n\n"
+                "Si continúas, se usarán solo las cédulas de la carpeta y los días "
+                "faltantes se rellenarán con la cédula del día anterior.\n\n"
+                "¿Deseas continuar?",
             ):
                 return False
 
@@ -618,6 +692,7 @@ class KPIGeneratorGUI:
                 objectives_file,
                 cedulas_source=self.cedulas_source.get(),
                 upload_sheets=self.upload_sheets_var.get(),
+                completar_cedulas_sheets=self.completar_sheets_var.get(),
             )
             
             self.root.after(0, self.processing_complete, result)

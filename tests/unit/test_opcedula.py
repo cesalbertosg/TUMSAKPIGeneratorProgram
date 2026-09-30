@@ -162,6 +162,22 @@ def test_excluye_arrastres() -> None:
     assert df_op.iloc[0]['Motrices Titulares'] == 1  # solo el motriz
 
 
+def test_fila_de_operacion_no_toma_el_tipo_de_un_rf_sustituto() -> None:
+    """v0.7.1: si el primer titular de MERCADO LIBRE TORTHON es un TORTHON RF
+    sustituto, la fila de la operación dice TORTHON (Por Equipo conserva el RF)."""
+    ident = {'Gerencia': 'SL', 'Operacion': 'MERCADO LIBRE', 'Circuito': 'TERCERO', 'Estatus': 'Operando'}
+    df_eq = _equipos([
+        {'Equipo Motriz': 'C101', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'MERCADO LIBRE TORTHON',
+         'Tipo de Unidad': 'TORTHON RF', **ident},
+        {'Equipo Motriz': 'C153', 'Tipo Equipo': 'Motriz', 'Operacion Cedula': 'MERCADO LIBRE TORTHON',
+         'Tipo de Unidad': 'TORTHON', **ident},
+    ])
+    df_op = OpcedulaAggregator(df_eq, obj_mapping={}, period=_period(),
+                                log_callback=lambda *_a, **_k: None).aggregate()
+    assert df_op.iloc[0]['Tipo de Unidad'] == 'TORTHON'
+    assert df_op.iloc[0]['Motrices Titulares'] == 2
+
+
 def test_remolques_y_dollies_titulares_por_motriz_dominante() -> None:
     """v0.7.0: foto de arrastres por la vigente heredada de su motriz dominante.
     Un arrastre sin motriz dominante (POR ASIGNAR) cae en su fila POR ASIGNAR."""

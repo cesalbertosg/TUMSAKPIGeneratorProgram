@@ -16,9 +16,13 @@ respaldo local + hoja de inconsistencias":
      que sigue vacío.
 5. Acentos/Ñ en columnas categóricas -> texto sin acentos tras el fallback.
 6. Tipo de Unidad sin TRACTOCAMION (v0.7.0): se homologa antes de calcular.
+7. TORTHON RF en FEDEX / MERCADO LIBRE / DHL (v0.7.1): la limpieza conserva el
+   tipo RF; solo la Operación Cedula usa TORTHON.
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -218,3 +222,26 @@ def test_tipo_unidad_tractocamion_se_homologa_antes_de_calcular() -> None:
     assert homologados == {('T001', 'TRACTOCAMION', 'SENCILLO'),
                            ('T002', 'TRACTOCAMION FULL', 'FULL'),
                            ('T003', 'Tractocamion Patio', 'PATIO')}
+
+
+# ---------- 7. TORTHON RF en operaciones sin refrigerado (v0.7.1) ----------
+
+def test_torthon_rf_sustituto_conserva_tipo_y_su_operacion_cedula_usa_torthon() -> None:
+    """Caso real C153 (Sheet: TORTHON RF en MERCADO LIBRE, circuito especial).
+    Decisión Beto (2026-09-30): el Tipo de Unidad sigue diciendo RF; solo la
+    Operación Cedula es MERCADO LIBRE TORTHON. La limpieza no toca el dato ni
+    lo manda a Inconsistencias."""
+    df_cedulas = pd.DataFrame([{
+        'Unidades': 'C153', 'Fecha Cedula_dt': pd.Timestamp('2026-09-25'),
+        'Gerencia': 'Sandra Luna', 'Operación': 'MERCADO LIBRE', 'Tipo de Unidad': 'TORTHON RF',
+        'Circuito': 'TERCERO', 'Operando': 'Operando',
+    }])
+    proc = _processor()
+
+    result = proc._apply_cedula_fallbacks(df_cedulas, pd.DataFrame())
+    mapping = proc.create_unit_mapping(result, datetime(2026, 9, 25))
+
+    assert result.iloc[0]['Tipo de Unidad'] == 'TORTHON RF'
+    assert mapping['C153']['Tipo de Unidad'] == 'TORTHON RF'
+    assert mapping['C153']['Operación cedula'] == 'MERCADO LIBRE TORTHON'
+    assert not [i for i in proc._inconsistencias if i['Campo'] == 'Tipo de Unidad']

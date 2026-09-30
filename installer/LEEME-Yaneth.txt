@@ -57,13 +57,19 @@ USO DIARIO (después de instalar)
 
 3. Confirmar que "Fuente cédulas" diga: excel
 
-4. Confirmar que "Subir resultado a Google Sheets" esté marcado.
+4. Confirmar que "Completar cédulas faltantes del periodo desde
+   Google Sheets" esté marcado. Si a la carpeta le faltan días, el
+   programa los trae del Google Sheet de cédulas. Desmárcalo solo si
+   quieres usar únicamente las cédulas de la carpeta.
 
-5. Click en "🚀 EJECUTAR ANÁLISIS".
+5. Confirmar que "Subir resultado a Google Sheets" esté marcado.
 
-6. Esperar (~30 segundos). Se abre un log mostrando avance.
+6. Click en "🚀 EJECUTAR ANÁLISIS".
 
-7. Al terminar:
+7. Esperar (~30 segundos). Se abre un log mostrando avance.
+   Si aparece un aviso de "días sin cédula", avisa a Beto.
+
+8. Al terminar:
    - Excel guardado en la carpeta destino
    - Google Sheets "KPI KM Auto" actualizado
 

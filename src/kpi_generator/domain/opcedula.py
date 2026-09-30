@@ -46,7 +46,7 @@ from typing import Dict, Optional
 
 import pandas as pd
 
-from kpi_generator.domain.equipment import STATUS_CANONICOS, categoria_status
+from kpi_generator.domain.equipment import STATUS_CANONICOS, categoria_status, tipo_opcedula
 from kpi_generator.domain.period import PeriodContext
 
 POR_ASIGNAR = 'POR ASIGNAR'
@@ -247,6 +247,10 @@ class OpcedulaAggregator:
             primera = grupo.iloc[0]
             id_gerencia, id_operacion = primera['Gerencia'], primera['Operacion']
             id_circuito, id_tipo_unidad = primera['Circuito'], primera['Tipo de Unidad']
+            # Un TORTHON RF sustituto (FEDEX/MERCADO LIBRE/DHL) no define el tipo
+            # de la operación: la fila MERCADO LIBRE TORTHON es TORTHON (v0.7.1).
+            if tipo_opcedula(id_operacion, id_tipo_unidad) == 'TORTHON':
+                id_tipo_unidad = 'TORTHON'
         else:
             id_gerencia = id_operacion = id_circuito = id_tipo_unidad = ''
 

@@ -33,6 +33,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from kpi_generator.config import Config
 from kpi_generator.domain.period import PeriodContext
 
 
@@ -250,17 +251,35 @@ class AsignacionVigente:
         )
 
 
-def _calcular_opcedula(operacion: str, circuito: str, tipo_unidad: str,
-                       special_circuits: Iterable[str]) -> str:
-    """Misma regla que ChangeTracker/ComodatoManager.
+def tipo_opcedula(operacion: str, tipo_unidad: str) -> str:
+    """Tipo de Unidad con el que se arma la Operación Cedula (v0.7.1).
 
-    SPECIAL_CIRCUITS -> usa tipo_unidad; resto -> usa circuito.
+    FEDEX, MERCADO LIBRE y DHL (y sus variantes, `Config.OPERACIONES_SIN_TORTHON_RF`)
+    no manejan torthon refrigerado: un TORTHON RF asignado ahí sustituye a otro
+    camión y su Operación Cedula es "... TORTHON" (Beto, 2026-09-30). El Tipo de
+    Unidad de la unidad NO cambia: en los reportes sigue diciendo RF.
     """
-    op = (operacion or '').upper()
-    ci = (circuito or '').upper()
-    tu = (tipo_unidad or '').upper()
-    if ci in {s.upper() for s in special_circuits}:
-        return f'{op} {tu}'
+    op = operacion.strip().upper() if isinstance(operacion, str) else ''
+    tu = tipo_unidad.upper() if isinstance(tipo_unidad, str) else ''
+    if tu.strip() == 'TORTHON RF' and any(
+            op == p or op.startswith(p + ' ') for p in Config.OPERACIONES_SIN_TORTHON_RF):
+        return 'TORTHON'
+    return tu
+
+
+def operacion_cedula(operacion: str, circuito: str, tipo_unidad: str,
+                     special_circuits: Optional[Iterable[str]] = None) -> str:
+    """Operación Cedula de una asignación: fuente única de la regla (v0.7.1).
+
+    SPECIAL_CIRCUITS -> OPERACION + tipo (`tipo_opcedula`); resto -> OPERACION +
+    circuito. La usan Por Equipo, el procesador (viajes, unit_mapping, fotos),
+    ChangeTracker y ComodatoManager — antes cada uno tenía su copia.
+    """
+    especiales = Config.SPECIAL_CIRCUITS if special_circuits is None else special_circuits
+    op = operacion.upper() if isinstance(operacion, str) else ''
+    ci = circuito.upper() if isinstance(circuito, str) else ''
+    if ci in {s.upper() for s in especiales}:
+        return f'{op} {tipo_opcedula(operacion, tipo_unidad)}'
     return f'{op} {ci}'
 
 
@@ -598,7 +617,7 @@ class EquipmentAggregator:
             operacion=op,
             tipo_unidad=tu,
             circuito=ci,
-            operacion_cedula=_calcular_opcedula(op, ci, tu, self.special_circuits),
+            operacion_cedula=operacion_cedula(op, ci, tu, self.special_circuits),
             estatus=ultima.get('Operando', ''),
         )
 
@@ -752,7 +771,7 @@ class EquipmentAggregator:
             op = row.get('Operación', '')
             ci = row.get('Circuito', '')
             tu = row.get('Tipo de Unidad', '')
-            opcedula = _calcular_opcedula(op, ci, tu, self.special_circuits)
+            opcedula = operacion_cedula(op, ci, tu, self.special_circuits)
             obj_entry = self.obj_mapping.get(opcedula)
             if not obj_entry:
                 continue

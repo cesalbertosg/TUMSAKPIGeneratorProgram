@@ -95,15 +95,22 @@ def parse_cedula_filename(filename: str) -> Optional[datetime]:
     return parsed.fecha if parsed else None
 
 
-def fill_missing_dates(df_cedulas: pd.DataFrame) -> pd.DataFrame:
+def fill_missing_dates(df_cedulas: pd.DataFrame, *, fecha_fin=None) -> pd.DataFrame:
     """Forward-fill por fecha sobre el rango completo del DataFrame de cedulas.
 
     Para cada dia ausente en el rango [min, max], replica el snapshot del dia
     anterior mas cercano (todas las unidades, mismas asignaciones).
+
+    `fecha_fin` (v0.7.1, opcional) extiende el rango hasta el fin del periodo:
+    los dias posteriores a la ultima cedula disponible tambien se rellenan con
+    ella. Sin el, esos dias quedaban sin cedula (unidades Sin Asignacion).
     """
+    fin = df_cedulas['Fecha Cedula_dt'].max()
+    if fecha_fin is not None:
+        fin = max(fin, pd.Timestamp(fecha_fin))
     date_range = pd.date_range(
         start=df_cedulas['Fecha Cedula_dt'].min(),
-        end=df_cedulas['Fecha Cedula_dt'].max(),
+        end=fin,
         freq='D',
     )
     existing_sorted = sorted(set(df_cedulas['Fecha Cedula_dt']))
@@ -131,6 +138,27 @@ def fill_missing_dates(df_cedulas: pd.DataFrame) -> pd.DataFrame:
         fill_frames.append(records)
 
     return pd.concat(fill_frames, ignore_index=True)
+
+
+def _a_fecha(valor):
+    """datetime/Timestamp/date -> date (datetime es subclase de date)."""
+    return valor.date() if isinstance(valor, datetime) else valor
+
+
+def _rangos_fechas(fechas) -> str:
+    """'01/06/2026–03/06/2026, 05/06/2026': dias consecutivos agrupados."""
+    dias = sorted({_a_fecha(f) for f in fechas})
+    grupos: list[list] = []
+    for d in dias:
+        if grupos and (d - grupos[-1][-1]).days == 1:
+            grupos[-1].append(d)
+        else:
+            grupos.append([d])
+    return ', '.join(
+        g[0].strftime('%d/%m/%Y') if len(g) == 1
+        else f"{g[0].strftime('%d/%m/%Y')}–{g[-1].strftime('%d/%m/%Y')}"
+        for g in grupos
+    )
 
 
 def _fusionar_cedulas_mismo_dia(
@@ -241,6 +269,11 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
     - v0.6.10: con `gap_fetcher` + rango, una carpeta SIN cedulas fisicas ya no
       aborta de entrada — se le pide a Drive el rango completo. Solo se falla
       si tras el relleno no quedo ni una fila.
+    - v0.7.1: con rango (el periodo), cada dia sin cedula fisica ni de Drive se
+      rellena con la del dia anterior — tambien al final del periodo — y se
+      avisa cuales fueron; los dias sin ninguna cedula previa quedan en
+      `lineage.fechas_sin_cedula`. Sin `gap_fetcher` (opcion "completar desde
+      Google Sheets" apagada) solo cuentan los archivos fisicos.
 
     Devuelve `None` ante cualquier error (carpeta invalida, archivos con
     formato no reconocido, columnas faltantes, etc.) — el caller debe
@@ -275,7 +308,8 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
         if not valid_files:
             if not puede_rellenar:
                 log("Sin archivos válidos y sin historial Drive disponible "
-                    "(falta Sheet ID de cédulas o rango de viajes)",
+                    "(completar desde Google Sheets apagado, o falta Sheet ID de "
+                    "cédulas o rango de viajes)",
                     LogLevel.ERROR, "ERR")
                 return None
             msg = ("Carpeta sin cédulas físicas: se intentará cubrir "
@@ -458,7 +492,33 @@ def load_daily_cedulas(cedulas_folder: str, log: LogCallback, *,
                 "abortando para no duplicar viajes", LogLevel.ERROR, "ERR")
             return None
 
-        df_cedulas = fill_missing_dates(df_cedulas)
+        # v0.7.1: periodo completo. Con rango conocido, un dia sin cedula
+        # fisica ni de Google Sheets se rellena con la del dia anterior —
+        # tambien al final del periodo, no solo entre dos cedulas — y se avisa
+        # cuales fueron. Un dia sin ninguna cedula previa no se puede rellenar.
+        con_rango = fecha_min is not None and fecha_max is not None
+        df_cedulas = fill_missing_dates(df_cedulas, fecha_fin=fecha_max if con_rango else None)
+        if con_rango:
+            cubiertas = {_a_fecha(f) for f in fechas_fisicas} | set(fechas_drive)
+            en_cedula = {_a_fecha(pd.Timestamp(f)) for f in df_cedulas['Fecha Cedula_dt'].unique()}
+            periodo = [fecha_min + timedelta(days=i) for i in range((fecha_max - fecha_min).days + 1)]
+            rellenadas = [d for d in periodo if d not in cubiertas and d in en_cedula]
+            sin_cedula = [d for d in periodo if d not in en_cedula]
+            origen = 'física' if gap_fetcher is None else 'física ni en Google Sheets'
+            if rellenadas:
+                msg = (f"{len(rellenadas)} día(s) del periodo sin cédula {origen} "
+                       f"({_rangos_fechas(rellenadas)}): se usó la cédula del día anterior")
+                log(msg, LogLevel.ERROR, "WARN")
+                if lineage is not None:
+                    lineage.advertencias.append(msg)
+            if sin_cedula:
+                msg = (f"{len(sin_cedula)} día(s) al inicio del periodo sin ninguna cédula "
+                       f"previa ({_rangos_fechas(sin_cedula)}): las unidades quedan Sin "
+                       "Asignación esos días")
+                log(msg, LogLevel.ERROR, "WARN")
+                if lineage is not None:
+                    lineage.fechas_sin_cedula = sin_cedula
+                    lineage.advertencias.append(msg)
 
         if lineage is not None:
             lineage.fechas_fisicas = list(fechas_fisicas)

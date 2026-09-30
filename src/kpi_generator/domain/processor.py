@@ -27,6 +27,8 @@ from kpi_generator.domain.equipment import (
     normalizar_opcedula,
     normalizar_tipo_unidad,
     normalize_text,
+    operacion_cedula,
+    tipo_opcedula,
 )
 from kpi_generator.domain.opcedula import OpcedulaAggregator, post_calcular_tendencia
 from kpi_generator.domain.period import PeriodContext
@@ -130,11 +132,14 @@ class DataProcessor:
 
     def load_data(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                   objectives_file: str = None, cedulas_sheet_id: str = None,
-                  cedulas_tab: str = None, cedulas_source: str = None) -> Optional[Dict]:
+                  cedulas_tab: str = None, cedulas_source: str = None,
+                  completar_cedulas_sheets: bool = True) -> Optional[Dict]:
         """Cargar y validar archivos de entrada optimizado.
 
         `cedulas_source` controla la fuente de cédulas: "db" | "excel" | "sheets".
         Si es None, se usa Config.CEDULAS_SOURCE (default "excel").
+        `completar_cedulas_sheets` (v0.7.1, solo fuente excel): completa los días
+        del periodo sin cédula física desde Google Sheets; False = solo físicas.
         """
         try:
             self.log("Cargando archivos", code="LOAD")
@@ -158,7 +163,8 @@ class DataProcessor:
             lineage = CedulaLineage(fuente_solicitada=source)
             self.last_lineage = lineage
             df_cedulas, df_cedulas_audit = self._load_cedulas_by_source(
-                source, trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab, lineage
+                source, trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab, lineage,
+                completar_desde_sheets=completar_cedulas_sheets,
             )
             if df_cedulas is None:
                 return None
@@ -216,6 +222,7 @@ class DataProcessor:
     def _load_cedulas_by_source(self, source: str, trips_file: str, cedulas_folder: str,
                                 cedulas_sheet_id: str | None, cedulas_tab: str | None,
                                 lineage: Optional[CedulaLineage] = None,
+                                completar_desde_sheets: bool = True,
                                 ) -> tuple[Optional[pd.DataFrame], pd.DataFrame]:
         """Despacha la carga de cédulas a la fuente apropiada.
 
@@ -223,6 +230,7 @@ class DataProcessor:
         Si source='db' falla y FALLBACK_ON_DB_ERROR=true, intenta el path Excel.
         `lineage` (v0.6.4) acumula fuente efectiva, archivos y fallbacks; la
         recursión del fallback escribe sobre el mismo objeto.
+        `completar_desde_sheets` (v0.7.1) solo aplica a la fuente excel.
         """
         if source == "sheets":
             self.log("Fuente cédulas: Google Sheets", code="SRC")
@@ -324,7 +332,7 @@ class DataProcessor:
                         lineage.fallbacks.append("sheets→excel: fallback Sheets falló")
                     return self._load_cedulas_by_source(
                         'excel', trips_file, cedulas_folder, cedulas_sheet_id, cedulas_tab,
-                        lineage
+                        lineage, completar_desde_sheets=completar_desde_sheets,
                     )
                 self.log(f"BD inaccesible y sin fallback: {e}", LogLevel.ERROR, "ERR")
                 return None, pd.DataFrame()
@@ -338,19 +346,38 @@ class DataProcessor:
             lineage.fuente_efectiva = 'excel'
             lineage.carpeta = cedulas_folder or None
 
-        # v0.6.5: rango de viajes para el gap-filler Drive (best-effort — sin
-        # rango o sin sheet_id, el modo excel se comporta como siempre).
+        # Periodo de cédulas: el del KPI (PeriodContext), del día 1 del mes al
+        # último viaje — aunque el zmov empiece después, esos días también
+        # cuentan (v0.7.1). Best-effort: sin rango, solo los archivos físicos.
         fecha_min = fecha_max = None
         try:
             fecha_min, fecha_max = derive_date_range(trips_file)
-            self.log(f"Rango de viajes: {fecha_min} a {fecha_max}", code="RNG")
+            fecha_min = min(fecha_min, fecha_max.replace(day=1))
+            self.log(f"Periodo de cédulas: {fecha_min} a {fecha_max}", code="RNG")
         except DateRangeError as e:
-            self.log(f"Sin rango de viajes ({e}); no se completan faltantes desde Drive",
+            self.log(f"Sin rango de viajes ({e}); no se verifica el periodo de cédulas",
                      LogLevel.ERROR, "WARN")
 
+        # v0.7.1: completar los días sin cédula física desde Google Sheets es
+        # una opción (checkbox GUI / --[no-]completar-cedulas). Si está
+        # activada pero no se puede, se avisa (hoja Fuente Cedulas + diálogo) y
+        # queda el relleno regular con la cédula del día anterior.
+        if lineage is not None:
+            lineage.completar_sheets = completar_desde_sheets
         gap_fetcher = None
         sheet_id = cedulas_sheet_id or Config.CEDULA_SHEET_ID
-        if fecha_min is not None and sheet_id:
+        aviso = None
+        if not completar_desde_sheets:
+            self.log("Completar cédulas desde Google Sheets: desactivado (solo cédulas "
+                     "físicas + relleno con el día anterior)", code="SRC")
+        elif fecha_min is None:
+            aviso = ("No se pudo determinar el periodo desde el archivo de viajes: no se "
+                     "completaron cédulas desde Google Sheets")
+        elif not sheet_id:
+            aviso = ("Completar desde Google Sheets está activado, pero falta "
+                     "SHEETS_ID_CEDULAS en el .env: se usaron solo las cédulas físicas + "
+                     "relleno con el día anterior")
+        else:
             def gap_fetcher(faltantes, _sid=sheet_id):
                 # approximate_older=False: un día anterior a toda revisión NO se
                 # aproxima ni se guarda — queda al forward-fill (decisión Beto
@@ -362,12 +389,10 @@ class DataProcessor:
                     approximate_older=False,
                     lineage=lineage,
                 )
-        elif fecha_min is not None:
-            # Sin Sheet ID no hay gap-filler: si ademas la carpeta esta vacia,
-            # load_daily_cedulas aborta — que quede dicho el porque (v0.6.10).
-            self.log("Sin Sheet ID de cédulas (CEDULA_SHEET_ID): no se completan "
-                     "fechas faltantes desde el historial Drive",
-                     LogLevel.ERROR, "WARN")
+        if aviso:
+            self.log(aviso, LogLevel.ERROR, "WARN")
+            if lineage is not None:
+                lineage.advertencias.append(aviso)
 
         df = self.load_daily_cedulas(cedulas_folder, lineage=lineage,
                                      fecha_min=fecha_min, fecha_max=fecha_max,
@@ -384,7 +409,10 @@ class DataProcessor:
            `Operación Cedula` del archivo de objetivos.
            Además homologa Tipo de Unidad (v0.7.0): no existe "TRACTOCAMION";
            "TRACTOCAMION <tipo>" -> <tipo> y "TRACTOCAMION" -> "SENCILLO"
-           (`normalizar_tipo_unidad`), antes de cualquier cálculo.
+           (`normalizar_tipo_unidad`), antes de cualquier cálculo. Los TORTHON
+           RF en FEDEX / MERCADO LIBRE / DHL (sustitutos) conservan su tipo;
+           solo su Operación Cedula usa TORTHON (`equipment.tipo_opcedula`,
+           v0.7.1) — aquí únicamente se reportan en el log.
         2. Rellena Gerencia/Operación/Circuito faltantes con
            `Config.CEDULA_FIELD_DEFAULTS`.
         3. Rellena Tipo de Unidad faltante desde el histórico de viajes
@@ -445,6 +473,22 @@ class DataProcessor:
                     valor_original=original.at[idx],
                 )
             df['Tipo de Unidad'] = homologado.astype(object)
+
+        # --- 1c. TORTHON RF sustitutos (v0.7.1) ---
+        # FEDEX, MERCADO LIBRE y DHL no manejan torthon refrigerado: un RF ahí
+        # sustituye a otro camión. Su Tipo de Unidad NO se toca (sigue RF en
+        # los reportes); la Operación Cedula usa TORTHON en
+        # `equipment.tipo_opcedula`. Aquí solo se deja constancia en el log.
+        if 'Tipo de Unidad' in df.columns and 'Operación' in df.columns:
+            mask_rf = pd.Series([
+                str(tu).strip().upper() == 'TORTHON RF' and tipo_opcedula(op, tu) == 'TORTHON'
+                for op, tu in zip(df['Operación'], df['Tipo de Unidad'])
+            ], index=df.index)
+            if mask_rf.any():
+                unidades = sorted(df.loc[mask_rf, 'Unidades'].astype(str).unique())
+                self.log(f"Torthon RF en FEDEX/MERCADO LIBRE/DHL (sustitutos): su Operación "
+                         f"Cédula usa TORTHON: {', '.join(unidades)} "
+                         f"({int(mask_rf.sum())} unidad-días)", code="CED")
 
         # --- 2. Defaults para Gerencia/Operación/Circuito ---
         for campo, default in Config.CEDULA_FIELD_DEFAULTS.items():
@@ -521,14 +565,11 @@ class DataProcessor:
 
     @lru_cache(maxsize=256)
     def _get_operacion_cedula(self, operacion: str, circuito: str, tipo_unidad: str) -> str:
-        """Generar cédula de operación según reglas de negocio (cached)."""
-        circuito_upper = circuito.upper()
-        operacion_upper = operacion.upper()
-        tipo_unidad_upper = tipo_unidad.upper()
-        
-        if circuito_upper in Config.SPECIAL_CIRCUITS:
-            return f"{operacion_upper} {tipo_unidad_upper}"
-        return f"{operacion_upper} {circuito_upper}"
+        """Generar cédula de operación según reglas de negocio (cached).
+
+        Delegado a `equipment.operacion_cedula`, fuente única de la regla (v0.7.1).
+        """
+        return operacion_cedula(operacion, circuito, tipo_unidad, Config.SPECIAL_CIRCUITS)
     
     def create_unit_mapping(self, df_cedulas: pd.DataFrame, analysis_date: datetime) -> Dict:
         """Crear mapeo maestro de unidades vehiculares optimizado, incluyendo unidades sin cédula."""
@@ -1234,7 +1275,8 @@ class DataProcessor:
     def generate_report(self, trips_file: str, fuel_file: str, cedulas_folder: str,
                         output_path: str, objectives_file: str = None,
                         cedulas_source: str = None,
-                        upload_sheets: bool = True) -> Optional[str]:
+                        upload_sheets: bool = True,
+                        completar_cedulas_sheets: bool = True) -> Optional[str]:
         """Pipeline v0.5.0: aggregators puros sobre PeriodContext.
 
         Flujo:
@@ -1250,6 +1292,8 @@ class DataProcessor:
 
         `cedulas_source`: "db" | "excel" | "sheets" | None (usa Config.CEDULAS_SOURCE).
         `upload_sheets`: True (default) sincroniza a Google Sheets; False solo genera Excel.
+        `completar_cedulas_sheets` (fuente excel): True (default) completa los días
+        del periodo sin cédula física desde Google Sheets; False = solo físicas.
         """
         try:
             self.log("=== INICIO PROCESO KPI ===", code="START")
@@ -1259,7 +1303,8 @@ class DataProcessor:
             self._inconsistencias = []
 
             data = self.load_data(trips_file, fuel_file, cedulas_folder, objectives_file,
-                                  cedulas_source=cedulas_source)
+                                  cedulas_source=cedulas_source,
+                                  completar_cedulas_sheets=completar_cedulas_sheets)
             if not data:
                 return None
 

@@ -25,6 +25,7 @@ from kpi_generator.domain.equipment import (
     normalizar_opcedula,
     normalizar_tipo_unidad,
     normalize_text,
+    operacion_cedula,
 )
 from kpi_generator.domain.period import PeriodContext
 
@@ -182,6 +183,54 @@ def test_normalizar_opcedula(clave: str, esperado: str) -> None:
 def test_clave_categoria_usa_vocabulario_de_cedula() -> None:
     assert not any('TRACTOCAMION' in tipo for tipo in CLAVE_CATEGORIA_A_TIPO_UNIDAD.values())
     assert CLAVE_CATEGORIA_A_TIPO_UNIDAD['SENCILLO'] == 'SENCILLO'
+
+
+@pytest.mark.parametrize("operacion,circuito,tipo,esperado", [
+    ('MERCADO LIBRE', 'DEDICADO', 'TORTHON RF', 'MERCADO LIBRE TORTHON'),
+    ('Mercado Libre', 'Tercero', 'Torthon RF', 'MERCADO LIBRE TORTHON'),
+    ('MERCADO LIBRE DFP', 'TERCERO', 'TORTHON RF', 'MERCADO LIBRE DFP TORTHON'),  # variante
+    ('FEDEX', 'DEDICADO', 'TORTHON RF', 'FEDEX TORTHON'),
+    ('FEDEX VILLA', 'DEDICADO', 'TORTHON RF', 'FEDEX VILLA TORTHON'),
+    ('DHL', 'TERCERO', 'TORTHON RF', 'DHL TORTHON'),
+    ('SORIANA', 'DEDICADO', 'TORTHON RF', 'SORIANA TORTHON RF'),        # sí maneja RF
+    ('MERCADO LIBRE', 'DEDICADO', 'SENCILLO RF', 'MERCADO LIBRE SENCILLO RF'),  # solo torthon
+    ('FEDEXPRESS', 'DEDICADO', 'TORTHON RF', 'FEDEXPRESS TORTHON RF'),  # no es FEDEX
+    ('FEDEX', 'CANCUN', 'TORTHON RF', 'FEDEX CANCUN'),                   # circuito normal
+])
+def test_operacion_cedula_torthon_rf_sustituto(operacion, circuito, tipo, esperado) -> None:
+    """FEDEX, MERCADO LIBRE y DHL no manejan torthon refrigerado (Beto,
+    2026-09-30): un TORTHON RF ahí es sustituto → su OpCedula usa TORTHON."""
+    assert operacion_cedula(operacion, circuito, tipo, SPECIAL_CIRCUITS) == esperado
+
+
+def test_opcedula_misma_regla_en_todo_el_pipeline() -> None:
+    """Las cuatro rutas que arman la Operación Cedula dan el mismo resultado
+    (antes cada una tenía su copia de la regla)."""
+    from kpi_generator.domain.change_tracker import ChangeTracker
+    from kpi_generator.domain.comodato import ComodatoManager
+    from kpi_generator.domain.processor import DataProcessor
+
+    args = ('MERCADO LIBRE', 'DEDICADO', 'TORTHON RF')
+    esperado = 'MERCADO LIBRE TORTHON'
+    assert operacion_cedula(*args) == esperado
+    assert DataProcessor(log_callback=lambda *_a, **_k: None)._get_operacion_cedula(*args) == esperado
+    assert ChangeTracker(lambda *_a, **_k: None)._get_operacion_cedula(*args) == esperado
+    assert ComodatoManager()._get_operacion_cedula_comodato(*args) == esperado
+
+
+def test_por_equipo_conserva_rf_y_opcedula_sin_rf() -> None:
+    """Por Equipo: el camión sigue siendo TORTHON RF; su Operación Cedula es
+    MERCADO LIBRE TORTHON y le toca el objetivo de MERCADO LIBRE TORTHON."""
+    ced = _ced([
+        {'Unidades': 'C153', 'Fecha Cedula_dt': '2026-06-01', 'Gerencia': 'Sandra Luna',
+         'Operación': 'MERCADO LIBRE', 'Tipo de Unidad': 'TORTHON RF', 'Circuito': 'TERCERO',
+         'Operando': 'Operando'},
+    ])
+    obj = {'MERCADO LIBRE TORTHON': {'Objetivo KM Diario': 150, 'Objetivo Viajes Diario': 1}}
+    fila = _agg(ced, _trips([]), obj_mapping=obj, corte='2026-06-01').aggregate().iloc[0]
+    assert fila['Tipo de Unidad'] == 'TORTHON RF'
+    assert fila['Operacion Cedula'] == 'MERCADO LIBRE TORTHON'
+    assert fila['Objetivo KM Corte'] == 150
 
 
 def test_pendiente_opcedula_en_mayusculas() -> None:
